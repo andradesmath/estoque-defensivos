@@ -1,0 +1,12 @@
+# Tema visual do painel (aplicado automaticamente, não precisa de CSS custom).
+# Referência: https://docs.streamlit.io/develop/api-reference/configuration/config.toml
+[theme]
+base = "light"
+primaryColor = "#2E7D32"            # verde escuro — botões, seleção, destaque
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#F1F4F1" # cinza-esverdeado suave — sidebar, cards, inputs
+textColor = "#1B1B1B"
+font = "sans serif"
+
+[client]
+toolbarMode = "minimal"

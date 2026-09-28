@@ -653,6 +653,45 @@ def pagina_importar() -> None:
             st.error(f"Falha na importação: {e}")
 
 
+# ---------------------------------------------------------------------------- pdfs importados
+def pagina_pdfs() -> None:
+    st.header("PDFs importados do SGI")
+    st.caption("Um PDF por loja e dia, salvo exatamente como baixado do SGI no momento da sincronização "
+               "(guardado para sempre — passa a valer a partir desta atualização; sincronizações anteriores "
+               "não têm PDF salvo).")
+    pdfs = db.listar_pdfs()
+    if pdfs.empty:
+        st.info("Nenhum PDF salvo ainda. Sincronize (de novo, se necessário) para os dias que quiser guardar.")
+        return
+    f1, f2 = st.columns(2)
+    lojas = sorted(pdfs["loja"].unique())
+    sel_lojas = f1.multiselect("Loja", lojas, default=lojas, key="pdf_lojas")
+    ini = f2.date_input("A partir de", value=DATA_INICIAL_SYNC, format="DD/MM/YYYY", key="pdf_ini")
+    d = pdfs[pdfs["loja"].isin(sel_lojas) & (pdfs["data"] >= ini)].sort_values(
+        ["data", "loja"], ascending=[False, True])
+    st.caption(f"{len(d)} PDF(s) · {d['tamanho'].sum() / 1024:.0f} KB no total.")
+    st.dataframe(d, hide_index=True, **LARG, height=380, column_config={
+        "loja": "Loja", "data": "Dia",
+        "tamanho": st.column_config.NumberColumn("Tamanho (bytes)", format="%d"),
+        "criado_em": "Guardado em",
+    })
+    if d.empty:
+        return
+
+    st.subheader("Baixar um PDF")
+    opcoes = list(zip(d["loja"], d["data"]))
+    escolha = st.selectbox("Loja e dia", opcoes, format_func=lambda o: f"{o[0]} — {o[1]:%d/%m/%Y}", key="pdf_escolha")
+    if escolha:
+        loja_sel, dia_sel = escolha
+        pdf_bytes = db.obter_pdf(loja_sel, dia_sel)
+        if pdf_bytes:
+            st.download_button(
+                "Baixar PDF", pdf_bytes, file_name=f"{loja_sel.replace(' ', '_')}_{dia_sel:%Y%m%d}.pdf",
+                mime="application/pdf", key=f"dl_pdf_{loja_sel}_{dia_sel}")
+        else:
+            st.warning("PDF não encontrado (pode ter sido removido).")
+
+
 # ---------------------------------------------------------------------------- sincronização
 def pagina_sincronizacao() -> None:
     st.header("Sincronização com o SGI")
@@ -716,5 +755,6 @@ PAGINAS = {
     "Vendas e zerados": pagina_vendas_zerados,
     "Não encontrados": pagina_nao_encontrados,
     "Importar base": pagina_importar,
+    "PDFs importados": pagina_pdfs,
     "Sincronização": pagina_sincronizacao,
 }

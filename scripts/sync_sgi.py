@@ -99,6 +99,17 @@ def salvar_pdf_debug(pdf: bytes, loja: str, dia: date) -> None:
         f.write(pdf)
 
 
+def salvar_pdf_debug_e_banco(pdf: bytes, loja: str, dia: date) -> None:
+    """Guarda o arquivo local de depuração (7 dias, artefato do Actions) e também no
+    Postgres (fica disponível na tela 'PDFs importados' do painel, para sempre)."""
+    salvar_pdf_debug(pdf, loja, dia)
+    from estoque import db
+    try:
+        db.salvar_pdf(loja, dia, pdf)
+    except Exception as e:  # noqa: BLE001 - não pode derrubar a gravação das vendas
+        print(f"  [aviso] não consegui guardar o PDF de {loja} {dia:%d/%m/%Y} no banco: {e}")
+
+
 # --------------------------------------------------------------------------- login
 def _preencher_por_label_ou_placeholder(page, rotulos, valor) -> bool:
     for rotulo in rotulos:
@@ -409,7 +420,7 @@ def baixar_pdf_dia(page, context, dia: date, operacoes: list[str], loja: str, ur
 
 
 # ------------------------------------------------------------------------------ orquestração
-def sincronizar_loja(playwright, loja, dias, operacoes, gravar, permitir_zerar, headed=False):
+def sincronizar_loja(playwright, loja, dias, operacoes, gravar, permitir_zerar, headed=False, salvar_pdf=salvar_pdf_debug):
     url_login = os.environ["SGI_URL_LOGIN"]
     empresa = os.environ[LOJA_PARA_EMPRESA_ENV[loja]]
     print(f"[{loja}] login e {len(dias)} dia(s) a sincronizar: "
@@ -434,7 +445,7 @@ def sincronizar_loja(playwright, loja, dias, operacoes, gravar, permitir_zerar, 
                 raise
 
         return sync_core.sincronizar_dias(
-            loja, dias, baixar, gravar, salvar_pdf=salvar_pdf_debug, permitir_zerar=permitir_zerar)
+            loja, dias, baixar, gravar, salvar_pdf=salvar_pdf, permitir_zerar=permitir_zerar)
     finally:
         browser.close()
 
@@ -469,12 +480,14 @@ def main(argv=None) -> int:
             print(f"  [dry-run] {loja} {dia:%d/%m/%Y}: {len(linhas)} produto(s) — nada gravado.")
             return {"gravados": len(linhas), "removidos": 0}
         dias_sinc = lambda loja: set()  # noqa: E731
+        salvar_pdf = salvar_pdf_debug  # dry-run: só o arquivo local, nada no banco
         exec_id = None
     else:
         from estoque import db
         db.init_schema()
         gravar = db.substituir_movimentacao_dia
         dias_sinc = db.dias_sincronizados
+        salvar_pdf = salvar_pdf_debug_e_banco
         exec_id = db.iniciar_execucao(os.environ.get("GITHUB_EVENT_NAME", "manual"))
 
     todos_ok, todos_erros = [], []
@@ -487,7 +500,8 @@ def main(argv=None) -> int:
                     jan = (hoje - inicio).days + 1 if args.forcar_tudo else janela
                     dias = sync_core.dias_a_sincronizar(inicio, hoje, dias_sinc(loja), jan)
                 try:
-                    ok, erros = sincronizar_loja(pw, loja, dias, operacoes, gravar, args.permitir_zerar, args.headed)
+                    ok, erros = sincronizar_loja(pw, loja, dias, operacoes, gravar, args.permitir_zerar, args.headed,
+                                                 salvar_pdf=salvar_pdf)
                     todos_ok += ok
                     todos_erros += erros
                 except Exception as e:  # noqa: BLE001 - falha de login/navegação da loja inteira

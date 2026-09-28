@@ -83,6 +83,17 @@ CREATE TABLE IF NOT EXISTS sync_dias (
     PRIMARY KEY (loja, data)
 );
 
+-- PDF original baixado do SGI, um por (loja, dia), guardado para conferência/auditoria.
+-- Reaproveita o mesmo padrão de sync_dias: sobrescreve se o dia for sincronizado de novo.
+CREATE TABLE IF NOT EXISTS sync_pdfs (
+    loja        VARCHAR(40)   NOT NULL,
+    data        DATE          NOT NULL,
+    pdf         BYTEA         NOT NULL,
+    tamanho     INTEGER       NOT NULL,
+    criado_em   TIMESTAMPTZ   NOT NULL DEFAULT now(),
+    PRIMARY KEY (loja, data)
+);
+
 CREATE TABLE IF NOT EXISTS sync_execucoes (
     id             BIGSERIAL   PRIMARY KEY,
     iniciado_em    TIMESTAMPTZ NOT NULL DEFAULT now(),

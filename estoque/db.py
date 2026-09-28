@@ -490,3 +490,30 @@ def finalizar_execucao(exec_id: int, status: str, resumo: str) -> None:
 def ultimas_execucoes(limite: int = 10) -> pd.DataFrame:
     return _df("""SELECT id, iniciado_em, finalizado_em, origem, status, resumo
                   FROM sync_execucoes ORDER BY id DESC LIMIT :l""", l=limite)
+
+
+# -------------------------------------------------------------------------------- pdfs
+def salvar_pdf(loja: str, dia: date, pdf_bytes: bytes) -> None:
+    """Guarda (sobrescrevendo) o PDF original de um (loja, dia). Chamado pelo sync
+    logo após o download, antes/depois de gravar as saídas — falha aqui não deve
+    interromper a gravação das vendas (ver scripts/sync_sgi.py)."""
+    with get_engine().begin() as conn:
+        conn.execute(text("""
+            INSERT INTO sync_pdfs (loja, data, pdf, tamanho)
+            VALUES (:l, :d, :p, :t)
+            ON CONFLICT (loja, data) DO UPDATE SET
+                pdf = EXCLUDED.pdf, tamanho = EXCLUDED.tamanho, criado_em = now()
+        """), {"l": loja, "d": dia, "p": pdf_bytes, "t": len(pdf_bytes)})
+
+
+def listar_pdfs() -> pd.DataFrame:
+    """Só metadados (sem os bytes) — leve para listar/filtrar na tela."""
+    return _df("SELECT loja, data, tamanho, criado_em FROM sync_pdfs ORDER BY data DESC, loja")
+
+
+def obter_pdf(loja: str, dia: date) -> bytes | None:
+    with get_engine().connect() as conn:
+        row = conn.execute(
+            text("SELECT pdf FROM sync_pdfs WHERE loja = :l AND data = :d"), {"l": loja, "d": dia}
+        ).first()
+    return bytes(row[0]) if row else None
