@@ -38,7 +38,7 @@ def _repo() -> str:
     repo = _segredo("GITHUB_REPO")
     if not repo or "/" not in repo:
         raise SincronizacaoIndisponivel(
-            "Falta o secret GITHUB_REPO no formato 'dono/repositorio' (ex.: SEU_USUARIO/estoque-defensivos)."
+            "Falta o secret GITHUB_REPO no formato 'dono/repositorio' (ex.: andradesmath/estoque-defensivos)."
         )
     return repo
 
