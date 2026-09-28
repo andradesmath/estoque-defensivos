@@ -1,0 +1,11 @@
+.env
+.streamlit/secrets.toml
+__pycache__/
+*.pyc
+.pytest_cache/
+debug_*.png
+debug_*.html
+debug_*.pdf
+node_modules/
+tests/fixtures/package-lock.json
+.venv/

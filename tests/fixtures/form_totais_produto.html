@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<!-- Réplica MÍNIMA do formulário "Total de Vendas por Produto" do SGI, com os mesmos ids/names/
+     atributos do HTML real e as mesmas libs (jQuery, Bootstrap 3, bootstrap-select,
+     bootstrap-datepicker). Usada só por tests/test_browser.py. Nenhum dado real. -->
+<html><head><meta charset="utf-8">
+<link rel="stylesheet" href="/static/bootstrap/dist/css/bootstrap.min.css">
+<link rel="stylesheet" href="/static/bootstrap-select/dist/css/bootstrap-select.min.css">
+<link rel="stylesheet" href="/static/bootstrap-datepicker/dist/css/bootstrap-datepicker3.min.css">
+</head><body>
+<form method="GET" action="/relatorio/total-de-vendas-produto" accept-charset="UTF-8" class="form-relatorio"
+      rota-pdf="/relatorio/total-de-vendas-produto/pdf" id="formRelatorio">
+  <input name="_token" type="hidden" value="tok-teste-123">
+  <label for="data_inicial">Data Inicial</label>
+  <input class="form-control datepicker input-data" autocomplete="off" type="text" placeholder="Data"
+         value="19/08/2026" name="data_inicial" id="data_inicial" required>
+  <label for="data_final">Data Final</label>
+  <input class="form-control datepicker input-data" autocomplete="off" type="text" placeholder="Data"
+         value="20/08/2026" name="data_final" id="data_final" required>
+
+  <label for="vendedores[]">Vendedores</label>
+  <select class="form-control selectpicker" show-tick multiple data-live-search="true" data-actions-box="true"
+          id="vendedores[]" name="vendedores[]"><option value="001">VENDEDOR A</option><option value="002">VENDEDOR B</option></select>
+
+  <label for="grupos[]">Grupos</label>
+  <select class="form-control selectpicker" show-tick multiple data-live-search="true" data-actions-box="true"
+          id="grupos[]" name="grupos[]">
+    <option value="00031">ADJUVANTE</option><option value="00018">ADUBO</option><option value="00030">BIOLOGICO</option>
+    <option value="00001">DEFENSIVOS</option><option value="00040">SEMENTES</option></select>
+
+  <label for="ordenar_por">Ordenar Por</label>
+  <select class="form-control selectpicker" show-tick id="ordenar_por" name="ordenar_por">
+    <option value="VENDAS:DESC">Valor Total</option><option value="DESCRICAO:ASC">Descrição</option><option value="QTD:DESC">Quantidade</option></select>
+
+  <label for="agrupamento">Agrupamento</label>
+  <select class="form-control selectpicker" show-tick id="agrupamento" name="agrupamento">
+    <option value="produto">Produto</option><option value="combo">Combo</option><option value="vendedor_produto">Vendedor/Produto</option>
+    <option value="vendedor_combo">Vendedor/Combo</option><option value="grupo_produto">Grupo</option></select>
+  <!-- no HTML real, o select de operações tem id="operacoes" e name="operacoes[]" -->
+  <select class="form-control selectpicker" show-tick title="Todos" data-live-search="true" id="operacoes" multiple required name="operacoes[]">
+    <option value="V" selected="selected">V - VENDA</option><option value="B">B - BONIFICAÇÃO</option><option value="T">T - TROCA</option></select>
+
+  <button class="btn btn-info botao-filtro" type="button" id="submitRelatorioTotalVendasProduto">Filtrar</button>
+  <button class="btn btn-default" type="button" id="buttonPdfRelatorioTotalVendasProduto" data-rota="/relatorio/total-de-vendas-produto/pdf">Imprimir</button>
+</form>
+<script src="/static/jquery/dist/jquery.min.js"></script>
+<script src="/static/bootstrap/dist/js/bootstrap.min.js"></script>
+<script src="/static/bootstrap-select/dist/js/bootstrap-select.min.js"></script>
+<script src="/static/bootstrap-datepicker/dist/js/bootstrap-datepicker.min.js"></script>
+<script>
+  $('.datepicker').datepicker({format: 'dd/mm/yyyy', autoclose: true, todayHighlight: true});
+  // handler idêntico ao do SGI (trecho visto no HTML real)
+  $('button#buttonPdfRelatorioTotalVendasProduto').on('click', function () {
+    var rota = $('form#formRelatorio').attr('rota-pdf');
+    var dados = $('form#formRelatorio').serialize();
+    var url = rota + '?' + dados;
+    window.open(url, '_blank');
+  });
+</script>
+</body></html>

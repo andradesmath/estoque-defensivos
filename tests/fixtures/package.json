@@ -1,0 +1,11 @@
+{
+  "name": "estoque-defensivos-test-fixtures",
+  "private": true,
+  "description": "Libs JS usadas SÓ pelo teste de navegador offline (tests/test_browser.py), as mesmas do SGI: jQuery + Bootstrap 3 + bootstrap-select + bootstrap-datepicker.",
+  "dependencies": {
+    "bootstrap": "3.4.1",
+    "bootstrap-datepicker": "1.9.0",
+    "bootstrap-select": "1.13.18",
+    "jquery": "3.7.1"
+  }
+}
