@@ -15,7 +15,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
-from . import db, github_actions, kpis, sync_core
+from . import db, github_actions, kpis, relatorios, sync_core
 from .compat import LARG
 from .importacao import validar_planilha
 from .ui_util import ROTULO_SITUACAO, brl, estilo_situacao, num, para_excel, pct, vazio
@@ -558,8 +558,14 @@ def pagina_vendas_zerados() -> None:
         "saidas_total": st.column_config.NumberColumn("Vendido (total)", format="%.0f"),
         "valor_saidas_total": st.column_config.NumberColumn("Valor vendido", format="R$ %.2f"),
     })
-    st.download_button("Baixar Excel", para_excel(tabela, "Zerados"), "produtos_zerados.xlsx",
-                       "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="dl_zerados")
+    c_dl1, c_dl2 = st.columns(2)
+    c_dl1.download_button("Baixar Excel", para_excel(tabela, "Zerados"), "produtos_zerados.xlsx",
+                          "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="dl_zerados")
+    c_dl2.download_button(
+        "Baixar PDF (para imprimir)",
+        relatorios.gerar_pdf_vendas_zerados(ini, fim, resumo, zerados, mov),
+        f"vendas_zerados_{ini:%Y%m%d}_{fim:%Y%m%d}.pdf", "application/pdf", key="dl_zerados_pdf",
+    )
 
     st.caption("Detalhe por produto — dia, loja e quantidade de cada venda no período filtrado acima:")
     for _, p in zerados.iterrows():

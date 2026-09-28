@@ -20,6 +20,32 @@ except ImportError:
 
 st.set_page_config(page_title="Estoque de Defensivos", page_icon="📦", layout="wide")
 
+# Acabamento visual leve sobre o tema (.streamlit/config.toml): cards com sombra sutil,
+# métricas destacadas e uma folha de impressão (esconde menu/botões ao "Imprimir" do navegador).
+st.markdown("""
+<style>
+[data-testid="stMetric"] {
+    background: #FFFFFF;
+    border: 1px solid #E3E8EC;
+    border-radius: 10px;
+    padding: 14px 16px 10px;
+    box-shadow: 0 1px 3px rgba(16, 42, 62, 0.08);
+}
+[data-testid="stMetricValue"] { color: #1B4B66; }
+h1, h2, h3 { color: #16374B; }
+[data-testid="stSidebar"] h1 { color: #F2F5F7 !important; font-size: 1.3rem; }
+[data-testid="stDataFrame"], [data-testid="stExpander"] {
+    border-radius: 8px;
+    overflow: hidden;
+}
+@media print {
+    [data-testid="stSidebar"], [data-testid="stHeader"], [data-testid="stToolbar"],
+    button, [data-testid="stDownloadButton"] { display: none !important; }
+    [data-testid="stAppViewBlockContainer"] { max-width: 100% !important; }
+}
+</style>
+""", unsafe_allow_html=True)
+
 from estoque import db  # noqa: E402
 from estoque.compat import LARG  # noqa: E402
 from estoque.paginas import PAGINAS  # noqa: E402
