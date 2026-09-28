@@ -519,6 +519,64 @@ def pagina_historico() -> None:
                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="dl_saidas")
 
 
+# --------------------------------------------------------------------- vendas por loja / zerados
+def pagina_vendas_zerados() -> None:
+    st.header("Vendas por loja e produtos zerados")
+    st.caption("Total vendido por loja no período e, abaixo, cada produto com saldo zerado ou "
+               "negativo — com o dia e a loja de cada venda que o zerou.")
+    f1, f2 = st.columns(2)
+    ini = f1.date_input("De", value=DATA_INICIAL_SYNC, format="DD/MM/YYYY", key="vz_ini")
+    fim = f2.date_input("Até", value=hoje_brasil(), format="DD/MM/YYYY", key="vz_fim")
+    mov = db.listar_movimentacao(ini=ini, fim=fim)
+    if mov.empty:
+        st.info("Nenhuma venda sincronizada no período.")
+        return
+
+    st.subheader("Total vendido por loja")
+    resumo = mov.groupby("loja", as_index=False)[["quantidade_saida", "valor_saida"]].sum()
+    cols = st.columns(len(resumo))
+    for col, (_, row) in zip(cols, resumo.iterrows()):
+        col.metric(row["loja"], f"{num(row['quantidade_saida'], 0)} un.", brl(row["valor_saida"]))
+
+    diario = mov.groupby(["data", "loja"], as_index=False)["quantidade_saida"].sum()
+    fig = px.bar(diario, x="data", y="quantidade_saida", color="loja", barmode="group",
+                 labels={"data": "", "quantidade_saida": "Unidades"})
+    fig.update_layout(margin=dict(l=0, r=0, t=10, b=0), height=280)
+    st.plotly_chart(fig, **LARG)
+
+    st.subheader("Produtos com saldo zerado ou negativo")
+    saldos = db.listar_saldos(apenas_ativos=False)
+    zerados = saldos[saldos["saldo_atual"] <= 0].sort_values("saldo_atual")
+    if zerados.empty:
+        st.success("Nenhum produto com saldo zerado ou negativo agora.")
+        return
+    tabela = zerados[["cod_produto", "descricao", "saldo_inicial", "saldo_atual", "saidas_total", "valor_saidas_total"]]
+    st.dataframe(tabela, hide_index=True, **LARG, column_config={
+        "cod_produto": "Código", "descricao": "Produto",
+        "saldo_inicial": st.column_config.NumberColumn("Saldo na contagem", format="%.0f"),
+        "saldo_atual": st.column_config.NumberColumn("Saldo atual", format="%.0f"),
+        "saidas_total": st.column_config.NumberColumn("Vendido (total)", format="%.0f"),
+        "valor_saidas_total": st.column_config.NumberColumn("Valor vendido", format="R$ %.2f"),
+    })
+    st.download_button("Baixar Excel", para_excel(tabela, "Zerados"), "produtos_zerados.xlsx",
+                       "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="dl_zerados")
+
+    st.caption("Detalhe por produto — dia, loja e quantidade de cada venda no período filtrado acima:")
+    for _, p in zerados.iterrows():
+        det = mov[mov["cod_produto"] == p["cod_produto"]].sort_values("data")
+        rotulo = f"{p['cod_produto']} — {p['descricao']} (saldo atual: {num(p['saldo_atual'], 0)})"
+        with st.expander(rotulo):
+            if det.empty:
+                st.caption("Sem vendas no período filtrado (o saldo já estava assim antes do período, ou veio de ajuste).")
+            else:
+                st.dataframe(det[["data", "loja", "quantidade_saida", "valor_saida"]], hide_index=True, **LARG,
+                             column_config={
+                                 "data": "Dia", "loja": "Loja",
+                                 "quantidade_saida": st.column_config.NumberColumn("Qtd vendida", format="%.0f"),
+                                 "valor_saida": st.column_config.NumberColumn("Valor", format="R$ %.2f"),
+                             })
+
+
 # ------------------------------------------------------------------------- não encontrados
 def pagina_nao_encontrados() -> None:
     st.header("Vendidos no SGI sem cadastro aqui")
@@ -655,6 +713,7 @@ PAGINAS = {
     "Movimentar estoque": pagina_movimentar,
     "Indicadores": pagina_indicadores,
     "Histórico de saídas": pagina_historico,
+    "Vendas e zerados": pagina_vendas_zerados,
     "Não encontrados": pagina_nao_encontrados,
     "Importar base": pagina_importar,
     "Sincronização": pagina_sincronizacao,
