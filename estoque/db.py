@@ -61,6 +61,12 @@ def _database_url() -> str:
         )
     if url.startswith("postgres://"):
         url = "postgresql://" + url[len("postgres://"):]
+    # Força o driver psycopg2 (instalado via requirements). Sem isso, a escolha do
+    # driver padrão do SQLAlchemy para "postgresql://" varia por ambiente/versão
+    # (viu-se "postgresql://" resolver para psycopg v3 no GitHub Actions, não
+    # instalado, e para psycopg2 localmente) — explicitar remove a ambiguidade.
+    if url.startswith("postgresql://"):
+        url = "postgresql+psycopg2://" + url[len("postgresql://"):]
     return url
 
 
