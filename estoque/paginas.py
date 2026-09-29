@@ -15,7 +15,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
-from . import db, github_actions, kpis, parser_nfe, relatorios, sync_core
+from . import db, github_actions, kpis, match_produto, parser_nfe, relatorios, sync_core
 from .compat import LARG
 from .importacao import validar_planilha
 from .ui_util import ROTULO_SITUACAO, brl, estilo_situacao, num, para_excel, pct, vazio
@@ -387,32 +387,46 @@ def pagina_movimentar() -> None:
 # --------------------------------------------------------------------- entrada por nota fiscal
 def pagina_entrada_nfe() -> None:
     st.header("Entrada por nota fiscal (PDF)")
-    st.caption("Envie o PDF da nota (DANFE) do fornecedor. O sistema tenta reconhecer os itens "
-               "automaticamente — confira e corrija antes de confirmar; nada é gravado sem sua revisão. "
+    st.caption("Envie o PDF da nota (DANFE) do fornecedor. O sistema tenta reconhecer os itens e "
+               "sugerir o produto do sistema (por associação anterior ou nome parecido) — confira e "
+               "corrija antes de confirmar; nada é gravado sem sua revisão. "
                "Cada item confirmado soma a quantidade ao saldo do produto escolhido e atualiza o custo "
                "(mesma regra de 'Movimentar estoque' → Entrada).")
     arq = st.file_uploader("PDF da nota fiscal", type=["pdf"], key="nfe_upload")
     if arq is None:
         return
 
-    chave = (arq.name, arq.size)
+    # VERSAO na chave: se a regra de sugestão mudar, a mesma nota é relida (senão o Streamlit
+    # reaproveitaria a leitura antiga guardada em session_state, sem sugestões).
+    chave = (arq.name, arq.size, match_produto.VERSAO)
     if st.session_state.get("nfe_chave") != chave:
         with st.spinner("Lendo a nota..."):
             nfe = parser_nfe.extrair_danfe(arq.getvalue())
         produtos_df = carregar_base()["produtos"]
         mapa_desc_todos = dict(zip(produtos_df["cod_produto"], produtos_df["descricao"]))
         mapa_forn = db.buscar_mapa_fornecedor(nfe.cnpj_emitente) if nfe.cnpj_emitente else {}
+        ativos_df = produtos_df[produtos_df["ativo"]]
+        mapa_desc_ativos = dict(zip(ativos_df["cod_produto"], ativos_df["descricao"]))
+
+        def _produto_da_linha(it):
+            # 1º: associação já confirmada antes para este fornecedor; 2º: sugestão por
+            # similaridade de nome (só quando confiável). Sem confiança -> em branco.
+            if it.cod_fornecedor in mapa_forn:
+                return _rotulo_produto(mapa_forn[it.cod_fornecedor], mapa_desc_todos)
+            sug = match_produto.sugerir_produto(it.descricao, mapa_desc_ativos)
+            return _rotulo_produto(sug[0], mapa_desc_ativos) if sug else None
+
         linhas = [{
             "incluir": True,
             "cod_fornecedor": it.cod_fornecedor,
             "descricao_nf": it.descricao,
             "quantidade": it.quantidade,
             "valor_unitario": it.valor_unitario,
-            "produto": _rotulo_produto(mapa_forn[it.cod_fornecedor], mapa_desc_todos)
-                       if it.cod_fornecedor in mapa_forn else None,
+            "produto": _produto_da_linha(it),
         } for it in nfe.itens]
         st.session_state["nfe_chave"] = chave
         st.session_state["nfe_extraida"] = nfe
+        st.session_state["nfe_diag"] = (sum(1 for l in linhas if l["produto"]), len(linhas), len(mapa_desc_ativos))
         st.session_state["nfe_linhas"] = pd.DataFrame(
             linhas, columns=["incluir", "cod_fornecedor", "descricao_nf", "quantidade", "valor_unitario", "produto"])
 
@@ -424,6 +438,9 @@ def pagina_entrada_nfe() -> None:
     ] if t]
     if info:
         st.caption(" · ".join(info))
+    n_sug, n_lin, n_cat = st.session_state.get("nfe_diag", (0, 0, 0))
+    st.caption(f"Sugestão automática v{match_produto.VERSAO}: {n_sug} de {n_lin} itens pré-selecionados "
+               f"(catálogo com {n_cat} produtos ativos).")
     if nfe.aviso:
         st.warning(nfe.aviso)
     if not nfe.cnpj_emitente:
