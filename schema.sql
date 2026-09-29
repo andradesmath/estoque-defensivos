@@ -94,6 +94,18 @@ CREATE TABLE IF NOT EXISTS sync_pdfs (
     PRIMARY KEY (loja, data)
 );
 
+-- Associa o código do produto usado pelo fornecedor (nas notas fiscais dele) ao código
+-- interno do produto, por CNPJ do emitente. Preenchida ao confirmar a 1ª entrada por nota
+-- de cada fornecedor; pré-preenche a tela sozinha nas próximas notas do mesmo emitente.
+CREATE TABLE IF NOT EXISTS mapa_fornecedor_produto (
+    cnpj_emitente        VARCHAR(20)  NOT NULL,
+    cod_fornecedor       VARCHAR(40)  NOT NULL,
+    cod_produto          VARCHAR(10)  NOT NULL REFERENCES produtos(cod_produto),
+    descricao_fornecedor TEXT,
+    atualizado_em        TIMESTAMPTZ  NOT NULL DEFAULT now(),
+    PRIMARY KEY (cnpj_emitente, cod_fornecedor)
+);
+
 CREATE TABLE IF NOT EXISTS sync_execucoes (
     id             BIGSERIAL   PRIMARY KEY,
     iniciado_em    TIMESTAMPTZ NOT NULL DEFAULT now(),

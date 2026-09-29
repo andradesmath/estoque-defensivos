@@ -170,3 +170,32 @@ def test_importar_modos(banco, base_xlsx_bytes):
 
 def test_schema_idempotente(banco):
     banco.init_schema(); banco.init_schema()
+
+
+def test_salvar_e_obter_pdf(banco):
+    conteudo = b"%PDF-1.4 conteudo de teste"
+    banco.salvar_pdf("Porteira", D22, conteudo)
+    assert banco.obter_pdf("Porteira", D22) == conteudo
+    assert banco.obter_pdf("Casa de Adubo", D22) is None  # loja diferente, nada salvo
+
+    lst = banco.listar_pdfs()
+    assert len(lst) == 1
+    assert lst.iloc[0]["loja"] == "Porteira" and lst.iloc[0]["tamanho"] == len(conteudo)
+
+    # sobrescreve no mesmo (loja, dia) em vez de duplicar
+    novo = b"%PDF-1.4 versao atualizada, mais bytes"
+    banco.salvar_pdf("Porteira", D22, novo)
+    assert banco.obter_pdf("Porteira", D22) == novo
+    assert len(banco.listar_pdfs()) == 1
+
+
+def test_mapa_fornecedor_produto(base):
+    cnpj = "14.644.182/0004-90"
+    assert base.buscar_mapa_fornecedor(cnpj) == {}
+    base.salvar_mapa_fornecedor(cnpj, "0139857", "00001", "APPROVE - 12X1")
+    assert base.buscar_mapa_fornecedor(cnpj) == {"0139857": "00001"}
+    # reassociar o mesmo código do fornecedor a outro produto atualiza, não duplica
+    base.salvar_mapa_fornecedor(cnpj, "0139857", "00002", "APPROVE - 12X1")
+    assert base.buscar_mapa_fornecedor(cnpj) == {"0139857": "00002"}
+    # CNPJ diferente não enxerga o mapa de outro fornecedor
+    assert base.buscar_mapa_fornecedor("99.999.999/0001-99") == {}

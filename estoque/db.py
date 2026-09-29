@@ -517,3 +517,27 @@ def obter_pdf(loja: str, dia: date) -> bytes | None:
             text("SELECT pdf FROM sync_pdfs WHERE loja = :l AND data = :d"), {"l": loja, "d": dia}
         ).first()
     return bytes(row[0]) if row else None
+
+
+# ------------------------------------------------------------- entrada por nota fiscal
+def buscar_mapa_fornecedor(cnpj_emitente: str) -> dict:
+    """cod_fornecedor -> cod_produto já associados para este CNPJ, para pré-preencher a
+    tela de entrada por nota na próxima vez que vier uma nota do mesmo fornecedor."""
+    if not cnpj_emitente:
+        return {}
+    df = _df("SELECT cod_fornecedor, cod_produto FROM mapa_fornecedor_produto WHERE cnpj_emitente = :c",
+             c=cnpj_emitente)
+    return dict(zip(df["cod_fornecedor"], df["cod_produto"]))
+
+
+def salvar_mapa_fornecedor(cnpj_emitente: str, cod_fornecedor: str, cod_produto: str,
+                           descricao_fornecedor: str | None = None) -> None:
+    with get_engine().begin() as conn:
+        conn.execute(text("""
+            INSERT INTO mapa_fornecedor_produto (cnpj_emitente, cod_fornecedor, cod_produto, descricao_fornecedor)
+            VALUES (:cn, :cf, :cp, :d)
+            ON CONFLICT (cnpj_emitente, cod_fornecedor) DO UPDATE SET
+                cod_produto = EXCLUDED.cod_produto, descricao_fornecedor = EXCLUDED.descricao_fornecedor,
+                atualizado_em = now()
+        """), {"cn": cnpj_emitente, "cf": cod_fornecedor, "cp": normalizar_cod(cod_produto),
+               "d": descricao_fornecedor})

@@ -15,7 +15,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
-from . import db, github_actions, kpis, relatorios, sync_core
+from . import db, github_actions, kpis, parser_nfe, relatorios, sync_core
 from .compat import LARG
 from .importacao import validar_planilha
 from .ui_util import ROTULO_SITUACAO, brl, estilo_situacao, num, para_excel, pct, vazio
@@ -382,6 +382,106 @@ def pagina_movimentar() -> None:
                 aid = st.number_input("ID do ajuste", min_value=1, step=1, key="del_aj_id")
                 if st.button("Excluir ajuste", key="del_aj"):
                     db.excluir_ajuste(int(aid)); limpar_cache(); st.rerun()
+
+
+# --------------------------------------------------------------------- entrada por nota fiscal
+def pagina_entrada_nfe() -> None:
+    st.header("Entrada por nota fiscal (PDF)")
+    st.caption("Envie o PDF da nota (DANFE) do fornecedor. O sistema tenta reconhecer os itens "
+               "automaticamente — confira e corrija antes de confirmar; nada é gravado sem sua revisão. "
+               "Cada item confirmado soma a quantidade ao saldo do produto escolhido e atualiza o custo "
+               "(mesma regra de 'Movimentar estoque' → Entrada).")
+    arq = st.file_uploader("PDF da nota fiscal", type=["pdf"], key="nfe_upload")
+    if arq is None:
+        return
+
+    chave = (arq.name, arq.size)
+    if st.session_state.get("nfe_chave") != chave:
+        with st.spinner("Lendo a nota..."):
+            nfe = parser_nfe.extrair_danfe(arq.getvalue())
+        produtos_df = carregar_base()["produtos"]
+        mapa_desc_todos = dict(zip(produtos_df["cod_produto"], produtos_df["descricao"]))
+        mapa_forn = db.buscar_mapa_fornecedor(nfe.cnpj_emitente) if nfe.cnpj_emitente else {}
+        linhas = [{
+            "incluir": True,
+            "cod_fornecedor": it.cod_fornecedor,
+            "descricao_nf": it.descricao,
+            "quantidade": it.quantidade,
+            "valor_unitario": it.valor_unitario,
+            "produto": _rotulo_produto(mapa_forn[it.cod_fornecedor], mapa_desc_todos)
+                       if it.cod_fornecedor in mapa_forn else None,
+        } for it in nfe.itens]
+        st.session_state["nfe_chave"] = chave
+        st.session_state["nfe_extraida"] = nfe
+        st.session_state["nfe_linhas"] = pd.DataFrame(
+            linhas, columns=["incluir", "cod_fornecedor", "descricao_nf", "quantidade", "valor_unitario", "produto"])
+
+    nfe = st.session_state["nfe_extraida"]
+    info = [t for t in [
+        f"**Fornecedor:** {nfe.nome_emitente}" if nfe.nome_emitente else None,
+        f"**Nota nº** {nfe.numero}" if nfe.numero else None,
+        f"**Emissão:** {nfe.data_emissao}" if nfe.data_emissao else None,
+    ] if t]
+    if info:
+        st.caption(" · ".join(info))
+    if nfe.aviso:
+        st.warning(nfe.aviso)
+    if not nfe.cnpj_emitente:
+        st.info("Não encontrei o CNPJ do fornecedor nesta nota — a associação código-do-fornecedor → "
+                "produto não será lembrada para a próxima nota dele.")
+
+    ativos = carregar_base()["produtos"]
+    ativos = ativos[ativos["ativo"]]
+    mapa_desc = dict(zip(ativos["cod_produto"], ativos["descricao"]))
+    opcoes = [_rotulo_produto(c, mapa_desc) for c in sorted(mapa_desc)]
+
+    dt_entrada = st.date_input("Data de entrada no estoque", value=hoje_brasil(), format="DD/MM/YYYY", key="nfe_data")
+    if st.session_state["nfe_linhas"].empty:
+        st.session_state["nfe_linhas"] = pd.DataFrame(
+            columns=["incluir", "cod_fornecedor", "descricao_nf", "quantidade", "valor_unitario", "produto"])
+    editado = st.data_editor(
+        st.session_state["nfe_linhas"], key="nfe_editor", hide_index=True, **LARG, num_rows="dynamic",
+        column_config={
+            "incluir": st.column_config.CheckboxColumn("Gravar?", default=True),
+            "cod_fornecedor": "Código (fornecedor)",
+            "descricao_nf": "Descrição na nota",
+            "quantidade": st.column_config.NumberColumn("Quantidade", format="%.3f", min_value=0.0),
+            "valor_unitario": st.column_config.NumberColumn("Valor unit. (R$)", format="%.4f", min_value=0.0),
+            "produto": st.column_config.SelectboxColumn("Produto no sistema", options=opcoes),
+        },
+    )
+    st.session_state["nfe_linhas"] = editado
+
+    if st.button("Confirmar entrada", type="primary", key="nfe_confirmar"):
+        erros, gravados = [], 0
+        for _, r in editado.iterrows():
+            if not r["incluir"]:
+                continue
+            rotulo_produto, qtd_nf = r["produto"], r["quantidade"]
+            if not rotulo_produto:
+                erros.append(f"'{r['descricao_nf'] or r['cod_fornecedor']}': sem produto selecionado — não gravado.")
+                continue
+            cod = str(rotulo_produto).split(" — ")[0].strip()
+            try:
+                qtd = float(qtd_nf or 0)
+                if qtd <= 0:
+                    raise ValueError("quantidade deve ser maior que zero")
+                db.registrar_ajuste(
+                    cod, dt_entrada, "entrada", qtd, custo_unitario=_opt(float(r["valor_unitario"] or 0)),
+                    observacao=f"NF {nfe.numero or '?'} — {nfe.nome_emitente or 'fornecedor não identificado'}",
+                    atualizar_custo=True,
+                )
+                if nfe.cnpj_emitente and r["cod_fornecedor"]:
+                    db.salvar_mapa_fornecedor(nfe.cnpj_emitente, str(r["cod_fornecedor"]), cod, r["descricao_nf"])
+                gravados += 1
+            except ValueError as e:
+                erros.append(f"{cod}: {e}")
+        limpar_cache()
+        if gravados:
+            st.success(f"{gravados} item(ns) somado(s) ao estoque.")
+            del st.session_state["nfe_chave"]  # se subir a mesma nota de novo, relê do zero
+        for e in erros:
+            st.error(e)
 
 
 # ------------------------------------------------------------------------------ indicadores
@@ -756,6 +856,7 @@ PAGINAS = {
     "Saldo por produto": pagina_saldo,
     "Produtos": pagina_produtos,
     "Movimentar estoque": pagina_movimentar,
+    "Entrada por nota fiscal": pagina_entrada_nfe,
     "Indicadores": pagina_indicadores,
     "Histórico de saídas": pagina_historico,
     "Vendas e zerados": pagina_vendas_zerados,
