@@ -426,6 +426,7 @@ def pagina_entrada_nfe() -> None:
         } for it in nfe.itens]
         st.session_state["nfe_chave"] = chave
         st.session_state["nfe_extraida"] = nfe
+        st.session_state["nfe_diag"] = (sum(1 for l in linhas if l["produto"]), len(linhas), len(mapa_desc_ativos))
         st.session_state["nfe_linhas"] = pd.DataFrame(
             linhas, columns=["incluir", "cod_fornecedor", "descricao_nf", "quantidade", "valor_unitario", "produto"])
 
@@ -437,6 +438,9 @@ def pagina_entrada_nfe() -> None:
     ] if t]
     if info:
         st.caption(" · ".join(info))
+    n_sug, n_lin, n_cat = st.session_state.get("nfe_diag", (0, 0, 0))
+    st.caption(f"Sugestão automática v{match_produto.VERSAO}: {n_sug} de {n_lin} itens pré-selecionados "
+               f"(catálogo com {n_cat} produtos ativos).")
     if nfe.aviso:
         st.warning(nfe.aviso)
     if not nfe.cnpj_emitente:
