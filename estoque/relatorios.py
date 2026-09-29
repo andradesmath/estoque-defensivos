@@ -107,3 +107,51 @@ def gerar_pdf_vendas_zerados(ini: date, fim: date, resumo: pd.DataFrame, zerados
 
     doc.build(story, onFirstPage=_rodape, onLaterPages=_rodape)
     return buf.getvalue()
+
+
+def gerar_pdf_negativados(ini: date, fim: date, negativados: pd.DataFrame, resumo: pd.DataFrame,
+                          mov: pd.DataFrame) -> bytes:
+    """Relatório: produtos com saldo negativo — quantas vezes teve venda em cada loja,
+    quantas unidades saíram e em quais dias."""
+    buf = BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=A4, topMargin=18 * mm, bottomMargin=20 * mm,
+                            leftMargin=18 * mm, rightMargin=18 * mm)
+    story = [
+        Paragraph("Produtos negativados", _titulo),
+        Paragraph(f"Período: {ini:%d/%m/%Y} a {fim:%d/%m/%Y}  ·  "
+                  f"Gerado em {datetime.now():%d/%m/%Y às %H:%M}", _subtitulo),
+    ]
+
+    story.append(Paragraph(f"{len(negativados)} produto(s) com saldo negativo agora", _secao))
+    linhas = [[Paragraph(p["cod_produto"], _celula), Paragraph(str(p["descricao"]), _celula),
+               Paragraph(num(p["saldo_atual"], 0), _celula)] for _, p in negativados.iterrows()]
+    story.append(_tabela(["Código", "Produto", "Saldo atual"], linhas, [22 * mm, 100 * mm, 30 * mm]))
+
+    story.append(Paragraph("Resumo por produto e loja — nº de dias com venda no período", _secao))
+    if resumo.empty:
+        story.append(Paragraph("Nenhuma venda desses produtos no período filtrado.", _celula))
+    else:
+        linhas = [[Paragraph(r["cod_produto"], _celula), Paragraph(str(r["descricao"]), _celula),
+                   Paragraph(r["loja"], _celula), Paragraph(num(r["ocorrencias"], 0), _celula),
+                   Paragraph(num(r["quantidade_saida"], 0), _celula), Paragraph(brl(r["valor_saida"]), _celula)]
+                  for _, r in resumo.iterrows()]
+        story.append(_tabela(["Código", "Produto", "Loja", "Dias c/ venda", "Unidades", "Valor"],
+                             linhas, [18 * mm, 55 * mm, 32 * mm, 22 * mm, 22 * mm, 25 * mm]))
+
+        story.append(Paragraph("Detalhe — dias de cada venda por loja", _secao))
+        for _, p in negativados.iterrows():
+            det = mov[mov["cod_produto"] == p["cod_produto"]]
+            if det.empty:
+                continue
+            bloco = [Paragraph(f"{p['cod_produto']} — {p['descricao']} "
+                               f"(saldo atual: {num(p['saldo_atual'], 0)})", _produto)]
+            for loja, g in det.groupby("loja"):
+                dias = sorted(g["data"].unique())
+                dias_fmt = ", ".join(d.strftime("%d/%m") for d in dias)
+                bloco.append(Paragraph(
+                    f"<b>{loja}</b> — {len(dias)} dia(s), {num(float(g['quantidade_saida'].sum()), 0)} un., "
+                    f"{brl(float(g['valor_saida'].sum()))}<br/>Dias: {dias_fmt}", _celula))
+            story.append(KeepTogether(bloco))
+
+    doc.build(story, onFirstPage=_rodape, onLaterPages=_rodape)
+    return buf.getvalue()

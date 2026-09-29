@@ -683,6 +683,76 @@ def pagina_vendas_zerados() -> None:
                              })
 
 
+# --------------------------------------------------------------------------- negativados
+def pagina_negativados() -> None:
+    st.header("Produtos negativados")
+    st.caption("Só produtos com saldo atual **negativo** (diferente de zerados: saldo = 0 não entra aqui). "
+               "Por loja: em quantos dias teve venda desse produto, quantas unidades saíram no total e em "
+               "quais dias — geralmente sinal de erro de lançamento, transferência não registrada ou venda "
+               "sem saldo suficiente.")
+    f1, f2 = st.columns(2)
+    ini = f1.date_input("De", value=DATA_INICIAL_SYNC, format="DD/MM/YYYY", key="ng_ini")
+    fim = f2.date_input("Até", value=hoje_brasil(), format="DD/MM/YYYY", key="ng_fim")
+
+    saldos = db.listar_saldos(apenas_ativos=False)
+    negativados = saldos[saldos["saldo_atual"] < 0].sort_values("saldo_atual")
+    if negativados.empty:
+        st.success("Nenhum produto com saldo negativo agora.")
+        return
+
+    mov = db.listar_movimentacao(ini=ini, fim=fim)
+    mov = mov[mov["cod_produto"].isin(negativados["cod_produto"])]
+
+    st.subheader(f"{len(negativados)} produto(s) negativado(s) agora")
+    m1, m2 = st.columns(2)
+    m1.metric("Unidades vendidas no período", num(float(mov["quantidade_saida"].sum()), 0) if not mov.empty else "0")
+    m2.metric("Valor vendido no período", brl(float(mov["valor_saida"].sum())) if not mov.empty else brl(0))
+
+    colunas_resumo = ["cod_produto", "descricao", "loja", "ocorrencias", "quantidade_saida", "valor_saida"]
+    if mov.empty:
+        st.info("Nenhuma venda desses produtos no período filtrado (o saldo já estava negativo antes do "
+                "período, ou veio de um ajuste manual).")
+        resumo = pd.DataFrame(columns=colunas_resumo)
+    else:
+        mapa_desc = dict(zip(negativados["cod_produto"], negativados["descricao"]))
+        resumo = (mov.groupby(["cod_produto", "loja"], as_index=False)
+                     .agg(ocorrencias=("data", "nunique"), quantidade_saida=("quantidade_saida", "sum"),
+                          valor_saida=("valor_saida", "sum")))
+        resumo["descricao"] = resumo["cod_produto"].map(mapa_desc)
+        resumo = resumo[colunas_resumo].sort_values("quantidade_saida", ascending=False)
+
+        st.subheader("Resumo por produto e loja")
+        st.dataframe(resumo, hide_index=True, **LARG, column_config={
+            "cod_produto": "Código", "descricao": "Produto", "loja": "Loja",
+            "ocorrencias": st.column_config.NumberColumn("Nº de dias com venda", format="%.0f"),
+            "quantidade_saida": st.column_config.NumberColumn("Unidades vendidas", format="%.0f"),
+            "valor_saida": st.column_config.NumberColumn("Valor vendido", format="R$ %.2f"),
+        })
+        c1, c2 = st.columns(2)
+        c1.download_button("Baixar Excel", para_excel(resumo, "Negativados"), "produtos_negativados.xlsx",
+                           "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="dl_neg_xlsx")
+        c2.download_button(
+            "Baixar PDF (para imprimir)",
+            relatorios.gerar_pdf_negativados(ini, fim, negativados, resumo, mov),
+            f"produtos_negativados_{ini:%Y%m%d}_{fim:%Y%m%d}.pdf", "application/pdf", key="dl_neg_pdf",
+        )
+
+    st.caption("Detalhe por produto — loja, nº de dias com venda e as datas de cada venda no período filtrado acima:")
+    for _, p in negativados.iterrows():
+        det = mov[mov["cod_produto"] == p["cod_produto"]]
+        rotulo = f"{p['cod_produto']} — {p['descricao']} (saldo atual: {num(p['saldo_atual'], 0)})"
+        with st.expander(rotulo):
+            if det.empty:
+                st.caption("Sem vendas no período filtrado.")
+                continue
+            for loja, g in det.groupby("loja"):
+                dias = sorted(g["data"].unique())
+                dias_fmt = ", ".join(d.strftime("%d/%m") for d in dias)
+                st.markdown(f"**{loja}** — {len(dias)} dia(s) com venda, "
+                           f"{num(float(g['quantidade_saida'].sum()), 0)} un., {brl(float(g['valor_saida'].sum()))}")
+                st.caption(f"Dias: {dias_fmt}")
+
+
 # ------------------------------------------------------------------------- não encontrados
 def pagina_nao_encontrados() -> None:
     st.header("Vendidos no SGI sem cadastro aqui")
@@ -860,6 +930,7 @@ PAGINAS = {
     "Indicadores": pagina_indicadores,
     "Histórico de saídas": pagina_historico,
     "Vendas e zerados": pagina_vendas_zerados,
+    "Negativados": pagina_negativados,
     "Não encontrados": pagina_nao_encontrados,
     "Importar base": pagina_importar,
     "PDFs importados": pagina_pdfs,
