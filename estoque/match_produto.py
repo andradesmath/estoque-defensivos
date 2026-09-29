@@ -14,6 +14,7 @@ import re
 import unicodedata
 from difflib import SequenceMatcher
 
+VERSAO = 1             # aumente ao mudar a regra: invalida leituras de NF já guardadas na sessão
 LIMIAR = 0.80          # score mínimo para sugerir
 MARGEM = 0.05          # vantagem mínima do 1º sobre o 2º (evita empate ambíguo)
 PENALIDADE_TAMANHO = 0.15  # candidato com tamanho de embalagem diferente do da nota

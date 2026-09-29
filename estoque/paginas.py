@@ -396,7 +396,9 @@ def pagina_entrada_nfe() -> None:
     if arq is None:
         return
 
-    chave = (arq.name, arq.size)
+    # VERSAO na chave: se a regra de sugestão mudar, a mesma nota é relida (senão o Streamlit
+    # reaproveitaria a leitura antiga guardada em session_state, sem sugestões).
+    chave = (arq.name, arq.size, match_produto.VERSAO)
     if st.session_state.get("nfe_chave") != chave:
         with st.spinner("Lendo a nota..."):
             nfe = parser_nfe.extrair_danfe(arq.getvalue())
