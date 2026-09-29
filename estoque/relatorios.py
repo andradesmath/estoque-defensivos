@@ -109,6 +109,29 @@ def gerar_pdf_vendas_zerados(ini: date, fim: date, resumo: pd.DataFrame, zerados
     return buf.getvalue()
 
 
+def gerar_pdf_saldo_estoque(vis: pd.DataFrame) -> bytes:
+    """Relatório: saldo, custo unitário e valor investido (custo × saldo) por produto,
+    com o total geral — mesma tabela da tela 'Saldo por produto'."""
+    buf = BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=A4, topMargin=18 * mm, bottomMargin=20 * mm,
+                            leftMargin=14 * mm, rightMargin=14 * mm)
+    total = float(vis["valor_estoque_custo"].sum(skipna=True))
+    story = [
+        Paragraph("Saldo e valor investido em estoque (a custo)", _titulo),
+        Paragraph(f"{len(vis)} produto(s)  ·  Gerado em {datetime.now():%d/%m/%Y às %H:%M}", _subtitulo),
+        Paragraph(f"Total investido (custo unitário × saldo): <b>{brl(total)}</b>", _secao),
+    ]
+    linhas = [[
+        Paragraph(r["cod_produto"], _celula), Paragraph(str(r["descricao"]), _celula),
+        Paragraph(num(r["saldo_atual"], 0), _celula), Paragraph(brl(r["preco_custo"]), _celula),
+        Paragraph(brl(r["valor_estoque_custo"]), _celula),
+    ] for _, r in vis.iterrows()]
+    story.append(_tabela(["Código", "Produto", "Saldo", "Custo unit.", "Valor investido"], linhas,
+                         [18 * mm, 90 * mm, 22 * mm, 28 * mm, 30 * mm]))
+    doc.build(story, onFirstPage=_rodape, onLaterPages=_rodape)
+    return buf.getvalue()
+
+
 def gerar_pdf_negativados(ini: date, fim: date, negativados: pd.DataFrame, resumo: pd.DataFrame,
                           mov: pd.DataFrame) -> bytes:
     """Relatório: produtos com saldo negativo — quantas vezes teve venda em cada loja,

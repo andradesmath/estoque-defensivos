@@ -15,7 +15,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
-from . import db, github_actions, kpis, match_produto, parser_nfe, relatorios, sync_core
+from . import db, github_actions, kpis, parser_cmv, parser_nfe, relatorios, sync_core
 from .compat import LARG
 from .importacao import validar_planilha
 from .ui_util import ROTULO_SITUACAO, brl, estilo_situacao, num, para_excel, pct, vazio
@@ -158,6 +158,8 @@ def pagina_saldo() -> None:
             "cobertura_dias", "preco_custo", "valor_estoque_custo", "curva_abc"]
     vis = d[cols].sort_values("descricao")
     st.caption(f"{len(vis)} produto(s). Saldo = contagem inicial + entradas/ajustes − saídas do SGI (calculado a cada leitura).")
+    st.metric("Total investido em estoque (a custo) — considerando os filtros acima",
+             brl(float(vis["valor_estoque_custo"].sum(skipna=True))))
     st.dataframe(
         vis.style.map(estilo_situacao, subset=["situacao"]),
         hide_index=True, **LARG, height=520,
@@ -173,8 +175,11 @@ def pagina_saldo() -> None:
             "curva_abc": "ABC",
         },
     )
-    st.download_button("Baixar Excel", para_excel(vis, "Saldo"), "saldo_defensivos.xlsx",
-                       "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    c1, c2 = st.columns(2)
+    c1.download_button("Baixar Excel", para_excel(vis, "Saldo"), "saldo_defensivos.xlsx",
+                       "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="dl_saldo_xlsx")
+    c2.download_button("Baixar PDF (para imprimir)", relatorios.gerar_pdf_saldo_estoque(vis),
+                       "saldo_e_custo_estoque.pdf", "application/pdf", key="dl_saldo_pdf")
 
 
 # ---------------------------------------------------------------------------------- produtos
@@ -387,46 +392,32 @@ def pagina_movimentar() -> None:
 # --------------------------------------------------------------------- entrada por nota fiscal
 def pagina_entrada_nfe() -> None:
     st.header("Entrada por nota fiscal (PDF)")
-    st.caption("Envie o PDF da nota (DANFE) do fornecedor. O sistema tenta reconhecer os itens e "
-               "sugerir o produto do sistema (por associação anterior ou nome parecido) — confira e "
-               "corrija antes de confirmar; nada é gravado sem sua revisão. "
+    st.caption("Envie o PDF da nota (DANFE) do fornecedor. O sistema tenta reconhecer os itens "
+               "automaticamente — confira e corrija antes de confirmar; nada é gravado sem sua revisão. "
                "Cada item confirmado soma a quantidade ao saldo do produto escolhido e atualiza o custo "
                "(mesma regra de 'Movimentar estoque' → Entrada).")
     arq = st.file_uploader("PDF da nota fiscal", type=["pdf"], key="nfe_upload")
     if arq is None:
         return
 
-    # VERSAO na chave: se a regra de sugestão mudar, a mesma nota é relida (senão o Streamlit
-    # reaproveitaria a leitura antiga guardada em session_state, sem sugestões).
-    chave = (arq.name, arq.size, match_produto.VERSAO)
+    chave = (arq.name, arq.size)
     if st.session_state.get("nfe_chave") != chave:
         with st.spinner("Lendo a nota..."):
             nfe = parser_nfe.extrair_danfe(arq.getvalue())
         produtos_df = carregar_base()["produtos"]
         mapa_desc_todos = dict(zip(produtos_df["cod_produto"], produtos_df["descricao"]))
         mapa_forn = db.buscar_mapa_fornecedor(nfe.cnpj_emitente) if nfe.cnpj_emitente else {}
-        ativos_df = produtos_df[produtos_df["ativo"]]
-        mapa_desc_ativos = dict(zip(ativos_df["cod_produto"], ativos_df["descricao"]))
-
-        def _produto_da_linha(it):
-            # 1º: associação já confirmada antes para este fornecedor; 2º: sugestão por
-            # similaridade de nome (só quando confiável). Sem confiança -> em branco.
-            if it.cod_fornecedor in mapa_forn:
-                return _rotulo_produto(mapa_forn[it.cod_fornecedor], mapa_desc_todos)
-            sug = match_produto.sugerir_produto(it.descricao, mapa_desc_ativos)
-            return _rotulo_produto(sug[0], mapa_desc_ativos) if sug else None
-
         linhas = [{
             "incluir": True,
             "cod_fornecedor": it.cod_fornecedor,
             "descricao_nf": it.descricao,
             "quantidade": it.quantidade,
             "valor_unitario": it.valor_unitario,
-            "produto": _produto_da_linha(it),
+            "produto": _rotulo_produto(mapa_forn[it.cod_fornecedor], mapa_desc_todos)
+                       if it.cod_fornecedor in mapa_forn else None,
         } for it in nfe.itens]
         st.session_state["nfe_chave"] = chave
         st.session_state["nfe_extraida"] = nfe
-        st.session_state["nfe_diag"] = (sum(1 for l in linhas if l["produto"]), len(linhas), len(mapa_desc_ativos))
         st.session_state["nfe_linhas"] = pd.DataFrame(
             linhas, columns=["incluir", "cod_fornecedor", "descricao_nf", "quantidade", "valor_unitario", "produto"])
 
@@ -438,9 +429,6 @@ def pagina_entrada_nfe() -> None:
     ] if t]
     if info:
         st.caption(" · ".join(info))
-    n_sug, n_lin, n_cat = st.session_state.get("nfe_diag", (0, 0, 0))
-    st.caption(f"Sugestão automática v{match_produto.VERSAO}: {n_sug} de {n_lin} itens pré-selecionados "
-               f"(catálogo com {n_cat} produtos ativos).")
     if nfe.aviso:
         st.warning(nfe.aviso)
     if not nfe.cnpj_emitente:
@@ -499,6 +487,131 @@ def pagina_entrada_nfe() -> None:
             del st.session_state["nfe_chave"]  # se subir a mesma nota de novo, relê do zero
         for e in erros:
             st.error(e)
+
+
+# ------------------------------------------------------------------- custo por CMV do SGI
+def pagina_custo_cmv() -> None:
+    st.header("Recalcular custo pelo CMV do SGI")
+    st.caption("Envie o(s) PDF \"Relação de Custo de Vendas por Produto\" do SGI (um por loja, mesmo "
+               "período). Esse relatório só tem valores em R$, sem quantidade — por isso o custo "
+               "unitário é calculado casando o CMV de cada produto com a quantidade que **já está "
+               "sincronizada no nosso sistema** no mesmo período: custo unitário = CMV ÷ quantidade "
+               "vendida. Confira a tabela antes de aplicar; nada muda no cadastro sem sua confirmação.")
+
+    arquivos = st.file_uploader("PDF(s) do CMV", type=["pdf"], accept_multiple_files=True, key="cmv_upload")
+    if not arquivos:
+        return
+
+    relatorios_lidos = []  # (loja, RelatorioCMV)
+    for arq in arquivos:
+        rel = parser_cmv.extrair_cmv(arq.getvalue())
+        emp = (rel.empresa or "").upper()
+        if "CASA DE ADUBO" in emp:
+            loja = "Casa de Adubo"
+        elif "PORTEIRA" in emp:
+            loja = "Porteira"
+        else:
+            loja = st.selectbox(f"Não reconheci a empresa de '{arq.name}' ({rel.empresa or '?'}) — qual loja é?",
+                                sync_core.LOJAS, key=f"cmv_loja_{arq.name}")
+        st.caption(f"**{arq.name}** → {loja} · período {rel.periodo_ini} a {rel.periodo_fim} · "
+                  f"{len(rel.itens)} item(ns)" + (f" — ⚠️ {rel.aviso}" if rel.aviso else ""))
+        relatorios_lidos.append((loja, rel))
+
+    if not relatorios_lidos:
+        return
+
+    periodos = {(r.periodo_ini, r.periodo_fim) for _, r in relatorios_lidos if r.periodo_ini}
+    if len(periodos) > 1:
+        st.warning("Os arquivos têm períodos diferentes entre si — confira se são realmente do mesmo "
+                  "intervalo antes de aplicar (uso o período de cada arquivo para achar a quantidade "
+                  "vendida correspondente, então isso não impede o cálculo, só merece atenção).")
+
+    produtos_df = carregar_base()["produtos"]
+    mapa_desc = dict(zip(produtos_df["cod_produto"], produtos_df["descricao"]))
+    mapa_custo_atual = dict(zip(produtos_df["cod_produto"], produtos_df["preco_custo"]))
+    cods_cadastrados = set(produtos_df["cod_produto"])
+
+    # cmv e quantidade (do nosso mov, no período de CADA arquivo) por produto, somando as lojas enviadas
+    from datetime import datetime as _dt
+    acumulado: dict[str, dict] = {}
+    for loja, rel in relatorios_lidos:
+        if not (rel.periodo_ini and rel.periodo_fim):
+            continue
+        ini = _dt.strptime(rel.periodo_ini, "%d/%m/%Y").date()
+        fim = _dt.strptime(rel.periodo_fim, "%d/%m/%Y").date()
+        mov_loja = db.listar_movimentacao(ini=ini, fim=fim)
+        mov_loja = mov_loja[mov_loja["loja"] == loja]
+        qtd_por_cod = mov_loja.groupby("cod_produto")["quantidade_saida"].sum().to_dict()
+        for it in rel.itens:
+            reg = acumulado.setdefault(it.cod_produto, {"cmv_total": 0.0, "qtd_total": 0.0, "descricao_sgi": it.descricao,
+                                                         "detalhe": []})
+            qtd = float(qtd_por_cod.get(it.cod_produto, 0.0))
+            reg["cmv_total"] += it.cmv
+            reg["qtd_total"] += qtd
+            reg["detalhe"].append(f"{loja}: CMV {brl(it.cmv)}, qtd {num(qtd, 0)}")
+
+    linhas = []
+    for cod, reg in acumulado.items():
+        encontrado = cod in cods_cadastrados
+        custo_atual = mapa_custo_atual.get(cod)
+        custo_novo = reg["cmv_total"] / reg["qtd_total"] if reg["qtd_total"] > 0 else None
+        dif_pct = ((custo_novo - custo_atual) / custo_atual * 100) if (custo_novo is not None and custo_atual) else None
+        linhas.append({
+            "aplicar": bool(encontrado and custo_novo is not None),
+            "cod_produto": cod,
+            "descricao": mapa_desc.get(cod, reg["descricao_sgi"]),
+            "encontrado": "Sim" if encontrado else "NÃO no cadastro",
+            "qtd_total": reg["qtd_total"],
+            "cmv_total": reg["cmv_total"],
+            "custo_atual": custo_atual,
+            "custo_novo": custo_novo,
+            "diferenca_pct": dif_pct,
+            "detalhe": " · ".join(reg["detalhe"]),
+        })
+    tabela = pd.DataFrame(linhas).sort_values(
+        "diferenca_pct", key=lambda s: s.abs(), ascending=False, na_position="last")
+
+    n_sem_qtd = int((tabela["custo_novo"].isna()).sum())
+    n_nao_cad = int((tabela["encontrado"] != "Sim").sum())
+    m1, m2, m3 = st.columns(3)
+    m1.metric("Produtos no(s) relatório(s)", len(tabela))
+    m2.metric("Sem quantidade correspondente aqui", n_sem_qtd)
+    m3.metric("Não encontrados no cadastro", n_nao_cad)
+    if n_sem_qtd:
+        st.caption("Produtos com CMV no relatório mas sem venda sincronizada no nosso sistema no mesmo "
+                  "período não têm como calcular o custo unitário aqui — ficam de fora, sem seleção.")
+
+    editado = st.data_editor(
+        tabela, key="cmv_editor", hide_index=True, **LARG, height=520,
+        disabled=["cod_produto", "descricao", "encontrado", "qtd_total", "cmv_total", "custo_atual",
+                 "custo_novo", "diferenca_pct", "detalhe"],
+        column_config={
+            "aplicar": st.column_config.CheckboxColumn("Aplicar?"),
+            "cod_produto": "Código", "descricao": "Produto", "encontrado": "No cadastro",
+            "qtd_total": st.column_config.NumberColumn("Qtd vendida (todas as lojas enviadas)", format="%.0f"),
+            "cmv_total": st.column_config.NumberColumn("CMV total", format="R$ %.2f"),
+            "custo_atual": st.column_config.NumberColumn("Custo atual", format="R$ %.4f"),
+            "custo_novo": st.column_config.NumberColumn("Custo novo (CMV ÷ qtd)", format="R$ %.4f"),
+            "diferenca_pct": st.column_config.NumberColumn("Diferença", format="%.1f%%"),
+            "detalhe": "Detalhe por loja",
+        },
+    )
+    st.download_button("Baixar Excel (para conferência)", para_excel(editado, "CustoCMV"), "custo_cmv.xlsx",
+                       "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="dl_cmv_xlsx")
+
+    if st.button("Aplicar custo novo aos itens marcados", type="primary", key="cmv_aplicar"):
+        marcados = editado[editado["aplicar"] & editado["custo_novo"].notna() & editado["encontrado"].eq("Sim")]
+        if marcados.empty:
+            st.warning("Nenhum item marcado (ou nenhum tem custo novo calculado) para aplicar.")
+        else:
+            registros = [{"cod_produto": r["cod_produto"], "preco_custo": round(float(r["custo_novo"]), 4)}
+                        for _, r in marcados.iterrows()]
+            n = db.atualizar_produtos_em_lote(registros)
+            limpar_cache()
+            st.success(f"Custo atualizado em {n} produto(s).")
+            st.caption("Isso só atualiza o preço de custo do cadastro — não altera saldo nem gera "
+                      "movimento; não há histórico dessa troca de custo hoje (se precisar, dá pra "
+                      "adicionar depois).")
 
 
 # ------------------------------------------------------------------------------ indicadores
@@ -944,6 +1057,7 @@ PAGINAS = {
     "Produtos": pagina_produtos,
     "Movimentar estoque": pagina_movimentar,
     "Entrada por nota fiscal": pagina_entrada_nfe,
+    "Recalcular custo (CMV)": pagina_custo_cmv,
     "Indicadores": pagina_indicadores,
     "Histórico de saídas": pagina_historico,
     "Vendas e zerados": pagina_vendas_zerados,
