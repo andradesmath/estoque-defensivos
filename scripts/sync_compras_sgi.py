@@ -133,8 +133,12 @@ def _exportar_xls(app, rep, dia: date) -> Path:
     rep.child_window(title="&Gerar Arq.", class_name="TBitBtn").click()
     dlg = app.window(title_re="Exportar Dados.*")
     dlg.wait("visible", timeout=10)
-    dlg.child_window(class_name="Edit", found_index=0).set_edit_text(str(destino))
-    dlg.child_window(title="Salvar", class_name="Button").click()
+    campo_nome = dlg.child_window(class_name="Edit", found_index=0)
+    campo_nome.set_edit_text(str(destino))
+    # Enter no campo confirma o diálogo (Salvar/OK), sem depender do texto exato do
+    # botão - diálogo comum do Windows (#32770), cuja legenda do botão varia
+    # ("Salvar" sem o "&" não bateu; em vez de caçar a grafia certa, usa Enter).
+    campo_nome.type_keys("{ENTER}")
 
     for _ in range(20):
         if destino.exists() and destino.stat().st_size > 0:
