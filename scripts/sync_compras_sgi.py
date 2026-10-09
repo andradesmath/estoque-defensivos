@@ -313,6 +313,26 @@ def _logar_sgi() -> None:
         )
 
 
+def _empresa_ativa(main) -> str:
+    """Devolve a empresa em que o SGI esta logado, lendo a faixa do rodape da janela
+    principal: "Licenciado para PORTEIRA AGROCOMERCIAL - SGI Versao 70.37" (confirmado
+    ao vivo em 09/10/2026).
+
+    E a UNICA forma confiavel de saber a empresa: o combo da tela de login nao expoe
+    texto nenhum (TDBLookupComboBox - window_text() sempre '') e o .xls exportado so
+    traz o cabecalho das colunas, sem identificacao de empresa. Devolve '' se nao achar
+    a faixa (o chamador decide o que fazer)."""
+    for ctrl in main.descendants():
+        try:
+            texto = ctrl.window_text() or ""
+        except Exception:  # noqa: BLE001 - nem todo descendente da pra ler
+            continue
+        if "Licenciado para" in texto:
+            depois = texto.split("Licenciado para", 1)[1]
+            return depois.split(" - SGI")[0].strip()
+    return ""
+
+
 def conectar_relatorio():
     """Garante SGI aberto+logado com a janela do relatorio disponivel, e devolve (app, rep).
     `app` fica pra achar outras janelas de nivel superior depois (ex.: o dialogo
@@ -334,30 +354,47 @@ def conectar_relatorio():
             raise RoboIndisponivel("SGI nao abriu/logou a tempo.") from e
 
     main = app.window(title_re=TITULO_PRINCIPAL + ".*")
+
+    # Logo apos o login, o SGI mostra um splash "Conectado! Carregando
+    # inventarios/clientes..." que deixa o menu principal desabilitado ate terminar -
+    # sem esperar isso, menu_select da ElementNotEnabled (visto ao vivo em 09/10/2026).
+    # O carregamento (dados vindo do servidor remoto) pode legitimamente demorar mais
+    # de 1 minuto. Checagem barata (is_enabled() so le o estado da janela) - nao
+    # atrapalha o caminho em que o SGI ja estava pronto havia tempo. Avisa a cada 15s
+    # pra nao parecer travado rodando sem interacao.
+    limite = float(os.environ.get("SYNC_COMPRAS_TIMEOUT_CARGA", "300"))
+    fim = time.time() + limite
+    ultimo_aviso = time.time()
+    while not main.is_enabled():
+        if time.time() > fim:
+            raise RoboIndisponivel(
+                f"SGI nao ficou pronto (menu habilitado) em {limite:.0f}s depois do "
+                "login - pode estar travado carregando inventarios/clientes (ou o "
+                "servidor remoto esta lento/fora)."
+            )
+        if time.time() - ultimo_aviso > 15:
+            print(f"  aguardando SGI terminar de carregar... ({int(time.time() - (fim - limite))}s)")
+            ultimo_aviso = time.time()
+        time.sleep(1.0)
+
+    # TRAVA DE SEGURANCA: confere a empresa logada ANTES de buscar qualquer dado. Em
+    # 09/10/2026 o robo rodou 18 dias inteiros logado em CASA DE ADUBO por engano - o
+    # relatorio veio vazio em todos (empresa errada nao tem essas compras). Se tivesse
+    # vindo com dados, teria gravado compras da loja errada no estoque.
+    ativa = _empresa_ativa(main)
+    if ativa and ativa.strip().upper() != EMPRESA_LOGIN.strip().upper():
+        raise RoboIndisponivel(
+            f"O SGI esta logado na empresa {ativa!r}, e nao em {EMPRESA_LOGIN!r} - os "
+            "dados de compras viriam da empresa errada, entao parei antes de buscar "
+            "qualquer coisa. Clique em Logoff no SGI e entre em "
+            f"{EMPRESA_LOGIN} (ou feche o SGI e rode de novo)."
+        )
+    if not ativa:
+        print("  AVISO: nao achei a faixa 'Licenciado para ...' pra conferir a empresa "
+              "logada - seguindo, mas sem essa garantia.")
+
     rep = main.child_window(title=TITULO_RELATORIO, class_name=CLASSE_RELATORIO)
     if not rep.exists():
-        # Logo apos o login, o SGI mostra um splash "Conectado! Carregando
-        # inventarios/clientes..." que deixa o menu principal desabilitado ate
-        # terminar - sem esperar isso, menu_select da ElementNotEnabled (visto ao vivo
-        # em 09/10/2026). O carregamento (dados vindo do servidor remoto) pode legitima-
-        # mente demorar mais de 1 minuto - 60s nao foi suficiente numa execucao real.
-        # Checagem barata (is_enabled() so le o estado da janela) - nao atrapalha o
-        # caminho em que o SGI ja estava pronto havia tempo. Avisa a cada 15s pra nao
-        # parecer travado rodando sem interacao.
-        limite = float(os.environ.get("SYNC_COMPRAS_TIMEOUT_CARGA", "300"))
-        fim = time.time() + limite
-        ultimo_aviso = time.time()
-        while not main.is_enabled():
-            if time.time() > fim:
-                raise RoboIndisponivel(
-                    f"SGI nao ficou pronto (menu habilitado) em {limite:.0f}s depois do "
-                    "login - pode estar travado carregando inventarios/clientes (ou o "
-                    "servidor remoto esta lento/fora)."
-                )
-            if time.time() - ultimo_aviso > 15:
-                print(f"  aguardando SGI terminar de carregar... ({int(time.time() - (fim - limite))}s)")
-                ultimo_aviso = time.time()
-            time.sleep(1.0)
         main.menu_select("Relatórios->Compras->Relação de Custo de Compras")
         rep = main.child_window(title=TITULO_RELATORIO, class_name=CLASSE_RELATORIO)
         try:
