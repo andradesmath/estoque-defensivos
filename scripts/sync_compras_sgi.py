@@ -121,10 +121,17 @@ def _definir_empresa(campo, texto: str) -> None:
     antes = {w.handle for w in Desktop(backend="win32").windows()}
     rect = campo.rectangle()
     campo.click_input(coords=(rect.width() - 10, rect.height() // 2))
-    time.sleep(0.3)
-    novas = [w for w in Desktop(backend="win32").windows() if w.handle not in antes]
+    # Polling em vez de 1 sleep fixo - a 1a tentativa (0.3s fixo) foi suficiente numa
+    # execucao e insuficiente noutra (maquina mais carregada) - da mais folego sem
+    # deixar o caminho rapido mais lento do que precisa.
+    novas = []
+    for _ in range(10):
+        time.sleep(0.2)
+        novas = [w for w in Desktop(backend="win32").windows() if w.handle not in antes]
+        if novas:
+            break
     if not novas:
-        raise RoboIndisponivel("Cliquei na seta do combo Empresa mas nenhum popup novo apareceu.")
+        raise RoboIndisponivel("Cliquei na seta do combo Empresa mas nenhum popup novo apareceu em 2s.")
     popup = novas[0]
 
     prect = popup.rectangle()
