@@ -94,7 +94,7 @@ def _logar_sgi() -> None:
     Application(backend="win32").start(str(SGI_EXE))
     try:
         app = Application(backend="win32").connect(title_re=TITULO_PRINCIPAL + ".*", timeout=40)
-    except ElementNotFoundError:
+    except (ElementNotFoundError, PywinautoTimeoutError):
         raise RoboIndisponivel(
             "SGI.exe abriu mas a janela principal nao apareceu em 40s - tela de login "
             "pode ter um layout diferente do esperado (nao testado ainda nesta versao)."
@@ -128,11 +128,11 @@ def conectar_relatorio():
     NAO testado ao vivo ainda) e cai no caso (2)."""
     try:
         app = _conectar_app()
-    except ElementNotFoundError:
+    except (ElementNotFoundError, PywinautoTimeoutError):
         _logar_sgi()
         try:
             app = _conectar_app()
-        except ElementNotFoundError as e:
+        except (ElementNotFoundError, PywinautoTimeoutError) as e:
             raise RoboIndisponivel("SGI nao abriu/logou a tempo.") from e
 
     main = app.window(title_re=TITULO_PRINCIPAL + ".*")
