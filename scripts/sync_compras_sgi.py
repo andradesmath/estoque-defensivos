@@ -188,10 +188,11 @@ def _definir_empresa(campo, texto: str) -> None:
     # sempre pula pro primeiro item (ponto de partida conhecido, independente de qual
     # empresa estava selecionada antes), {DOWN} x indice anda ate a linha certa, {ENTER}
     # confirma - robusto a qualquer altura/posicao de linha real.
-    popup.type_keys("{HOME}")
-    if indice > 0:
-        popup.type_keys("{DOWN}" * indice)
-    popup.type_keys("{ENTER}")
+    # IMPORTANTE: tudo numa unica chamada de type_keys (1 string so) - chamadas
+    # separadas falharam com ElementNotVisible na 2a tecla, sinal de que o popup
+    # (janela transitoria) ja fica invisivel/muda de estado assim que a 1a tecla e
+    # processada, e verify_actionable() da proxima chamada ve esse estado intermediario.
+    popup.type_keys("{HOME}" + "{DOWN}" * indice + "{ENTER}")
     time.sleep(0.3)
 
     atual = campo.window_text()
