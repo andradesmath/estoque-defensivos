@@ -206,9 +206,16 @@ def _definir_empresa(campo, texto: str) -> None:
     # de buscar qualquer dado.
 
 
-def _logar_sgi() -> None:
-    """Abre o SGI pelo atalho e loga (SGI_LOGIN + SGI_SENHA_DESKTOP do .env). So roda
-    quando o SGI nao estava aberto - NUNCA mata/reinicia uma sessao ja logada.
+def _logar_sgi():
+    """Abre o SGI pelo atalho, loga (SGI_LOGIN + SGI_SENHA_DESKTOP do .env) e devolve
+    o Application ja conectado ao processo CERTO. So roda quando o SGI nao estava
+    aberto - NUNCA mata/reinicia uma sessao ja logada.
+
+    Devolve o app de proposito: conectar depois por titulo da janela principal pode
+    cair num SGI ANTIGO ainda aberto. Foi o que aconteceu em 09/10/2026 - dois SGI
+    rodando (um logado em CASA DE ADUBO, outro recem-aberto na tela de login), o robo
+    conectou no logado e ficou 120s procurando ali a tela de login, que estava no
+    outro processo.
 
     SGI_SENHA_DESKTOP (nao SGI_SENHA): a senha do app desktop e DIFERENTE da senha do
     portal web (confirmado pelo usuario em 09/10/2026) - SGI_SENHA e usada por
@@ -223,15 +230,31 @@ def _logar_sgi() -> None:
     # resolver o atalho): abre como um duplo-clique no .lnk, com o diretorio de
     # trabalho certo.
     os.startfile(str(SGI_ATALHO))
-    try:
-        app = Application(backend="win32").connect(title_re=TITULO_PRINCIPAL + ".*", timeout=40)
-    except (ElementNotFoundError, PywinautoTimeoutError):
+
+    # Espera a tela de login aparecer em QUALQUER processo e conecta ao dono DELA -
+    # assim o robo trabalha no SGI que acabou de abrir, nao em outro que ja estivesse
+    # rodando.
+    espera = float(os.environ.get("SYNC_COMPRAS_TIMEOUT_LOGIN", "120"))
+    fim = time.time() + espera
+    janela_login = None
+    while time.time() < fim and janela_login is None:
+        time.sleep(1.0)
+        try:
+            for w in Desktop(backend="win32").windows():
+                if (w.window_text() or "").strip() == TITULO_LOGIN:
+                    janela_login = w
+                    break
+        except Exception:  # noqa: BLE001 - enumerar janelas pode falhar num instante ruim
+            continue
+    if janela_login is None:
         raise RoboIndisponivel(
-            "SGI abriu (via atalho) mas a janela principal nao apareceu em 40s - tela de "
-            "login pode ter um layout diferente do esperado, ou algum dialogo (ex. erro) "
-            "ficou aberto bloqueando. Confira a tela."
+            f"Abri o SGI pelo atalho mas a tela de login ('{TITULO_LOGIN}') nao "
+            f"apareceu em {espera:.0f}s."
         )
+
+    app = Application(backend="win32").connect(process=janela_login.process_id())
     _preencher_login(app)
+    return app
 
 
 def _preencher_login(app) -> None:
@@ -358,11 +381,9 @@ def conectar_relatorio():
     try:
         app = _conectar_app()
     except (ElementNotFoundError, PywinautoTimeoutError):
-        _logar_sgi()
-        try:
-            app = _conectar_app()
-        except (ElementNotFoundError, PywinautoTimeoutError) as e:
-            raise RoboIndisponivel("SGI nao abriu/logou a tempo.") from e
+        # Usa o app que _logar_sgi devolve (conectado ao processo que ele mesmo abriu),
+        # em vez de reconectar por titulo - reconectar podia cair num SGI antigo.
+        app = _logar_sgi()
 
     # SGI aberto mas DESLOGADO (alguem clicou em Logoff, ou abriu e nao entrou): a
     # janela principal existe e a faixa do rodape ainda mostra a empresa da sessao
