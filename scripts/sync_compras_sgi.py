@@ -252,12 +252,17 @@ def _preencher_login(app) -> None:
     # processo), NAO campos dentro da janela principal - confirmado ao vivo em
     # 09/10/2026 (main.children(class_name="Edit") nao achava nada, por isso o login
     # nunca rodava e o fluxo seguia pro menu com o dialogo bloqueando tudo).
+    # 15s nao bastava: entre abrir a janela principal e mostrar a tela de login, o SGI
+    # ainda conecta no banco remoto ("Criando Conexao com Banco de Dados") e isso
+    # passou de 15s numa execucao real (09/10/2026). Espera generosa, configuravel.
+    espera_login = float(os.environ.get("SYNC_COMPRAS_TIMEOUT_LOGIN", "120"))
     login = app.window(title=TITULO_LOGIN)
     try:
-        login.wait("visible", timeout=15)
+        login.wait("exists visible", timeout=espera_login)
     except PywinautoTimeoutError:
         raise RoboIndisponivel(
-            f"SGI abriu mas a janela de login ('{TITULO_LOGIN}') nao apareceu em 15s."
+            f"SGI abriu mas a janela de login ('{TITULO_LOGIN}') nao apareceu em "
+            f"{espera_login:.0f}s."
         )
 
     # "Edit" generico nao bateu (achei 0) - mesmo padrao dos outros controles Delphi
