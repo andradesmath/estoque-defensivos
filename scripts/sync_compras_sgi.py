@@ -118,10 +118,8 @@ def _definir_empresa(campo, texto: str) -> None:
         )
     indice = indices[0]
 
-    # Garante que a janela de login esta em primeiro plano antes de clicar - um clique
-    # sintetico (click_input/SendInput) pode nao abrir o dropdown se o dialogo pai nao
-    # estiver ativo (visto ao vivo: 1a tentativa com retry de tempo ainda falhou, sinal
-    # de que nao era so timing).
+    # Garante que a janela de login esta em primeiro plano antes de interagir - uma
+    # tentativa sintetica pode nao abrir o dropdown se o dialogo pai nao estiver ativo.
     try:
         campo.top_level_parent().set_focus()
     except Exception:  # noqa: BLE001 - foco e so uma ajuda, nao impede a tentativa
@@ -129,20 +127,42 @@ def _definir_empresa(campo, texto: str) -> None:
     time.sleep(0.2)
 
     rect = campo.rectangle()
-    novas = []
-    for tentativa in range(3):
-        antes = {w.handle for w in Desktop(backend="win32").windows()}
-        campo.click_input(coords=(rect.width() - 10, rect.height() // 2))
-        # Polling em vez de 1 sleep fixo - dar folego pro popup renderizar.
+
+    def _esperar_popup() -> list:
+        novas = []
         for _ in range(10):
             time.sleep(0.2)
             novas = [w for w in Desktop(backend="win32").windows() if w.handle not in antes]
             if novas:
                 break
+        return novas
+
+    # So clicar na seta nao foi confiavel (3 tentativas identicas, 0 sucesso numa
+    # execucao, sucesso noutra) - tenta tambem os atalhos de teclado padrao de qualquer
+    # combobox do Windows (F4, Alt+Down), que costumam funcionar mesmo em controles
+    # customizados que nao respondem as mensagens CB_* nem sempre reagem bem a clique
+    # sintetico.
+    tentativas = [
+        ("clique na seta", lambda: campo.click_input(coords=(rect.width() - 10, rect.height() // 2))),
+        ("clique na seta (mais perto da borda)",
+         lambda: campo.click_input(coords=(rect.width() - 4, rect.height() // 2))),
+        ("tecla F4", lambda: (campo.click_input(coords=(10, rect.height() // 2)), campo.type_keys("{F4}"))),
+        ("Alt+Down", lambda: (campo.click_input(coords=(10, rect.height() // 2)), campo.type_keys("%{DOWN}"))),
+    ]
+    novas = []
+    descricoes_tentadas = []
+    for nome, acao in tentativas:
+        antes = {w.handle for w in Desktop(backend="win32").windows()}
+        acao()
+        novas = _esperar_popup()
+        descricoes_tentadas.append(nome)
         if novas:
             break
     if not novas:
-        raise RoboIndisponivel("Cliquei na seta do combo Empresa 3x mas nenhum popup novo apareceu.")
+        raise RoboIndisponivel(
+            f"Tentei abrir o dropdown da Empresa de {len(descricoes_tentadas)} jeitos "
+            f"({', '.join(descricoes_tentadas)}) e nenhum popup apareceu."
+        )
     popup = novas[0]
 
     prect = popup.rectangle()
