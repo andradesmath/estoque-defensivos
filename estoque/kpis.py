@@ -98,8 +98,22 @@ def _prep_entradas(entradas) -> pd.DataFrame:
     return e.groupby(["cod_produto", "data"], as_index=False)[["quantidade_entrada"]].sum()
 
 
+def _prep_transferencias(transferencias) -> pd.DataFrame:
+    """Transferências de SAÍDA (movimentacao_transferencia) agregadas por produto+dia.
+    Opcional, como as entradas por compra - None devolve vazio, que soma zero."""
+    vazio = pd.DataFrame({"cod_produto": pd.Series(dtype="object"),
+                          "data": pd.Series(dtype="datetime64[ns]"),
+                          "quantidade_transferida": pd.Series(dtype="float64")})
+    if transferencias is None or len(transferencias) == 0:
+        return vazio
+    t = transferencias.copy()
+    t["data"] = pd.to_datetime(t["data"])
+    t["quantidade_transferida"] = pd.to_numeric(t["quantidade_transferida"], errors="coerce").fillna(0.0)
+    return t.groupby(["cod_produto", "data"], as_index=False)[["quantidade_transferida"]].sum()
+
+
 def serie_saldo_diaria(produtos: pd.DataFrame, mov: pd.DataFrame, ajustes: pd.DataFrame,
-                       hoje: date, entradas=None) -> pd.DataFrame:
+                       hoje: date, entradas=None, transferencias=None) -> pd.DataFrame:
     """Saldo de FIM de dia por produto, de data_saldo_inicial até `hoje`. No dia da
     contagem o saldo é o saldo_inicial; movimentos com data <= contagem são ignorados
     (mesma regra de v_saldo_produto).
@@ -113,6 +127,7 @@ def serie_saldo_diaria(produtos: pd.DataFrame, mov: pd.DataFrame, ajustes: pd.Da
     m = _prep_mov(mov)
     a = _prep_ajustes(ajustes)
     ent = _prep_entradas(entradas)
+    tra = _prep_transferencias(transferencias)
     hoje_ts = pd.Timestamp(hoje)
 
     frames = []
@@ -128,9 +143,11 @@ def serie_saldo_diaria(produtos: pd.DataFrame, mov: pd.DataFrame, ajustes: pd.Da
     g = g.merge(m[["cod_produto", "data", "quantidade_saida"]], on=["cod_produto", "data"], how="left")
     g = g.merge(a, on=["cod_produto", "data"], how="left")
     g = g.merge(ent, on=["cod_produto", "data"], how="left")
-    cols = ["quantidade_saida", "quantidade", "quantidade_entrada"]
+    g = g.merge(tra, on=["cod_produto", "data"], how="left")
+    cols = ["quantidade_saida", "quantidade", "quantidade_entrada", "quantidade_transferida"]
     g[cols] = g[cols].fillna(0.0)
-    delta = g["quantidade"] + g["quantidade_entrada"] - g["quantidade_saida"]
+    delta = (g["quantidade"] + g["quantidade_entrada"]
+             - g["quantidade_saida"] - g["quantidade_transferida"])
     g["delta"] = np.where(g["data"] > g["d0"], delta, 0.0)
     g = g.sort_values(["cod_produto", "data"])
     g["saldo"] = g["saldo_inicial"] + g.groupby("cod_produto")["delta"].cumsum()
@@ -159,13 +176,14 @@ def indicadores(
     excesso_dias: int = 120,
     dias_sem_giro: int = 30,
     entradas=None,
+    transferencias=None,
 ) -> pd.DataFrame:
     p = _prep_produtos(produtos).reset_index(drop=True)
     if p.empty:
         return pd.DataFrame(columns=COLUNAS_INDICADORES)
     m = _prep_mov(mov)
     hoje_ts = pd.Timestamp(hoje)
-    serie = serie_saldo_diaria(produtos, mov, ajustes, hoje, entradas)
+    serie = serie_saldo_diaria(produtos, mov, ajustes, hoje, entradas, transferencias)
 
     ini_global = hoje_ts - pd.Timedelta(days=janela_dias - 1)
     p["inicio_periodo"] = p["data_saldo_inicial"].apply(lambda d0: max(ini_global, d0 + pd.Timedelta(days=1)))
@@ -274,9 +292,9 @@ def resumo_geral(ind: pd.DataFrame) -> dict:
 
 
 def evolucao_valor_estoque(produtos: pd.DataFrame, mov: pd.DataFrame, ajustes: pd.DataFrame,
-                           hoje: date, entradas=None) -> pd.DataFrame:
+                           hoje: date, entradas=None, transferencias=None) -> pd.DataFrame:
     """Valor total do estoque a custo por dia (custo atual aplicado ao histórico)."""
-    serie = serie_saldo_diaria(produtos, mov, ajustes, hoje, entradas)
+    serie = serie_saldo_diaria(produtos, mov, ajustes, hoje, entradas, transferencias)
     p = _prep_produtos(produtos)[["cod_produto", "preco_custo"]]
     s = serie.merge(p, on="cod_produto")
     s = s[s["preco_custo"].notna()]

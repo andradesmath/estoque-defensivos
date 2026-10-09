@@ -37,6 +37,8 @@ def carregar_base() -> dict:
         # fica MENOR que o real e diverge de v_saldo_produto - foi o que aconteceu com
         # o JOINER em 09/10/2026 (painel -2, view 10).
         "ent": db.listar_movimentacao_entrada_compra(),
+        # Transferências de saída pra Piatã (robô do SGI desktop): descontam do saldo.
+        "tr": db.listar_transferencias(),
     }
 
 
@@ -49,7 +51,8 @@ def calcular_indicadores(janela_dias: int = 30, cobertura_alvo: int = 30, excess
     b = carregar_base()
     return kpis.indicadores(b["produtos"], b["mov"], b["aj"], hoje_brasil(), janela_dias=janela_dias,
                             cobertura_alvo=cobertura_alvo, excesso_dias=excesso_dias,
-                            dias_sem_giro=dias_sem_giro, entradas=b["ent"])
+                            dias_sem_giro=dias_sem_giro, entradas=b["ent"],
+                            transferencias=b["tr"])
 
 
 def _rotulo_produto(cod: str, mapa_desc: dict) -> str:
@@ -127,7 +130,7 @@ def pagina_visao_geral() -> None:
                              hide_index=True, **LARG)
 
     b = carregar_base()
-    ev = kpis.evolucao_valor_estoque(b["produtos"], b["mov"], b["aj"], hoje_brasil(), b["ent"])
+    ev = kpis.evolucao_valor_estoque(b["produtos"], b["mov"], b["aj"], hoje_brasil(), b["ent"], b["tr"])
     if not ev.empty and ev["valor"].sum() > 0:
         st.subheader("Evolução do valor do estoque (a custo atual)")
         fig = px.line(ev, x="data", y="valor", labels={"data": "", "valor": "R$"})

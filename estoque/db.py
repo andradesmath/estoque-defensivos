@@ -501,6 +501,91 @@ def dias_sincronizados_compras(loja: str) -> set[date]:
     return {r[0] for r in linhas}
 
 
+def substituir_transferencias_periodo(destino: str, inicio: date, fim: date,
+                                      por_dia: dict) -> dict:
+    """Grava as transferências de SAÍDA (Porteira -> `destino`) do período, do robô
+    scripts/sync_transferencias_sgi.py.
+
+    Por período, e não por dia como as compras, porque o relatório "Relação de
+    Transferências" aceita um intervalo e traz a data em cada linha: uma exportação só
+    cobre tudo. A gravação APAGA o intervalo e regrava - assim um dia que deixou de ter
+    transferência (lançamento estornado no SGI) some do nosso lado também, o que o
+    upsert por dia sozinho não faria.
+
+    `por_dia`: {date: [{'cod_produto','descricao','quantidade_transferida',
+    'valor_transferido'}]} - a saída de parser_transferencias_sgi.agrupar_por_dia."""
+    for dia, linhas in por_dia.items():
+        cods = [l["cod_produto"] for l in linhas]
+        if len(set(cods)) != len(cods):
+            raise ValueError(f"linhas com código repetido em {dia:%d/%m/%Y} — agregue antes de gravar.")
+
+    registros = [
+        {"cod": l["cod_produto"], "d": dia, "dest": destino, "desc": l.get("descricao"),
+         "q": l["quantidade_transferida"], "v": l["valor_transferido"]}
+        for dia, linhas in por_dia.items() for l in linhas
+    ]
+    with get_engine().begin() as conn:
+        r = conn.execute(text("""DELETE FROM movimentacao_transferencia
+                                 WHERE destino = :dest AND data BETWEEN :ini AND :fim"""),
+                         {"dest": destino, "ini": inicio, "fim": fim})
+        removidos = r.rowcount
+        if registros:
+            conn.execute(text("""
+                INSERT INTO movimentacao_transferencia
+                    (cod_produto, data, destino, descricao_sgi, quantidade_transferida, valor_transferido)
+                VALUES (:cod, :d, :dest, :desc, :q, :v)
+                ON CONFLICT (cod_produto, data, destino) DO UPDATE SET
+                    descricao_sgi = EXCLUDED.descricao_sgi,
+                    quantidade_transferida = EXCLUDED.quantidade_transferida,
+                    valor_transferido = EXCLUDED.valor_transferido,
+                    atualizado_em = now()
+            """), registros)
+    return {"gravados": len(registros), "removidos": removidos, "dias": len(por_dia)}
+
+
+def listar_transferencias(ini: date | None = None, fim: date | None = None,
+                          cod: str | None = None) -> pd.DataFrame:
+    cond, params = ["TRUE"], {}
+    if ini:
+        cond.append("data >= :ini"); params["ini"] = ini
+    if fim:
+        cond.append("data <= :fim"); params["fim"] = fim
+    if cod:
+        cond.append("cod_produto = :cod"); params["cod"] = normalizar_cod(cod)
+    return _df(f"""SELECT cod_produto, data, destino, descricao_sgi,
+                          quantidade_transferida, valor_transferido
+                   FROM movimentacao_transferencia WHERE {' AND '.join(cond)}
+                   ORDER BY data DESC, cod_produto""", **params)
+
+
+def possiveis_duplicatas_transferencia(dia: date, codigos: list[str]) -> list[dict]:
+    """Ajustes manuais de SAÍDA (quantidade negativa) que já existem para esses produtos
+    nesse dia - candidatos a descontar em dobro quando o robô gravar a mesma
+    transferência.
+
+    Espelha possiveis_duplicatas_compra, mas olhando o outro sinal: transferência tira
+    do estoque, e hoje essas saídas são lançadas à mão no painel (confirmado pelo
+    usuário em 09/10/2026), então ao ligar o robô os lançamentos manuais dos mesmos
+    dias precisam sair."""
+    if not codigos:
+        return []
+    with get_engine().connect() as conn:
+        linhas = conn.execute(
+            text("""SELECT a.id, a.cod_produto, p.descricao, a.quantidade, a.tipo, a.observacao
+                    FROM ajustes a
+                    JOIN produtos p ON p.cod_produto = a.cod_produto
+                    WHERE a.data = :d AND a.quantidade < 0
+                      AND a.cod_produto = ANY(:cods)
+                    ORDER BY a.cod_produto"""),
+            {"d": dia, "cods": list(codigos)},
+        ).fetchall()
+    return [
+        {"id": r[0], "cod_produto": r[1], "descricao": r[2],
+         "quantidade": r[3], "tipo": r[4], "observacao": r[5]}
+        for r in linhas
+    ]
+
+
 def possiveis_duplicatas_compra(dia: date, codigos: list[str]) -> list[dict]:
     """Entradas manuais (ajustes de quantidade POSITIVA) que ja existem para esses
     produtos nesse dia - ou seja, candidatas a contar em dobro quando o robo de compras

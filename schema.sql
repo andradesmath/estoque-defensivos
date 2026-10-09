@@ -61,6 +61,26 @@ CREATE TABLE IF NOT EXISTS movimentacao_entrada_compra (
 );
 CREATE INDEX IF NOT EXISTS ix_mov_entrada_compra_data ON movimentacao_entrada_compra (data);
 
+-- Transferências de SAÍDA para outra loja (hoje só Porteira -> Piatã), sincronizadas
+-- do relatório "Relação de Transferências" do SGI desktop (robô local,
+-- scripts/sync_transferencias_sgi.py). Diminuem o saldo da Porteira.
+--
+-- Diferente de movimentacao_entrada_compra, aqui o relatório aceita um PERÍODO e traz a
+-- data em cada linha, então o robô sincroniza o período inteiro de uma vez: a gravação
+-- apaga o intervalo e regrava (ver db.substituir_transferencias_periodo). A chave
+-- (cod, data, destino) mantém a idempotência de qualquer jeito.
+CREATE TABLE IF NOT EXISTS movimentacao_transferencia (
+    cod_produto            VARCHAR(10)   NOT NULL,
+    data                   DATE          NOT NULL,
+    destino                VARCHAR(40)   NOT NULL,
+    descricao_sgi          TEXT,
+    quantidade_transferida NUMERIC(14,3) NOT NULL,
+    valor_transferido      NUMERIC(14,2) NOT NULL DEFAULT 0,
+    atualizado_em          TIMESTAMPTZ   NOT NULL DEFAULT now(),
+    PRIMARY KEY (cod_produto, data, destino)
+);
+CREATE INDEX IF NOT EXISTS ix_mov_transferencia_data ON movimentacao_transferencia (data);
+
 -- Movimentos manuais. quantidade é ASSINADA: positivo aumenta o estoque.
 CREATE TABLE IF NOT EXISTS ajustes (
     id              BIGSERIAL     PRIMARY KEY,
@@ -155,7 +175,7 @@ SELECT
     COALESCE(s.qtd, 0)                                          AS saidas_total,
     COALESCE(s.valor, 0)                                        AS valor_saidas_total,
     p.saldo_inicial + COALESCE(a.total, 0) - COALESCE(s.qtd, 0)
-        + COALESCE(ec.qtd, 0)                                   AS saldo_atual,
+        + COALESCE(ec.qtd, 0) - COALESCE(tr.qtd, 0)             AS saldo_atual,
     p.preco_custo,
     p.preco_venda,
     p.lead_time_dias,
@@ -167,7 +187,9 @@ SELECT
     -- colunas novas no fim da lista - inserir no meio quebra com InvalidTableDefinition
     -- porque desloca a posição das colunas já existentes em produção).
     COALESCE(ec.qtd, 0)                                         AS entradas_compras_total,
-    COALESCE(ec.valor, 0)                                       AS valor_entradas_compras_total
+    COALESCE(ec.valor, 0)                                       AS valor_entradas_compras_total,
+    COALESCE(tr.qtd, 0)                                         AS transferencias_total,
+    COALESCE(tr.valor, 0)                                       AS valor_transferencias_total
 FROM produtos p
 LEFT JOIN (
     SELECT m.cod_produto,
@@ -187,6 +209,15 @@ LEFT JOIN (
     WHERE m.data > p4.data_saldo_inicial
     GROUP BY m.cod_produto
 ) ec ON ec.cod_produto = p.cod_produto
+LEFT JOIN (
+    SELECT m.cod_produto,
+           SUM(m.quantidade_transferida) AS qtd,
+           SUM(m.valor_transferido)      AS valor
+    FROM movimentacao_transferencia m
+    JOIN produtos p5 ON p5.cod_produto = m.cod_produto
+    WHERE m.data > p5.data_saldo_inicial
+    GROUP BY m.cod_produto
+) tr ON tr.cod_produto = p.cod_produto
 LEFT JOIN (
     SELECT j.cod_produto, SUM(j.quantidade) AS total
     FROM ajustes j
