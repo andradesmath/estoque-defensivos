@@ -98,17 +98,25 @@ def _campos_data(rep):
     return dtps[0], dtps[1]  # esquerda = Data Inicial, direita = Data Final
 
 
-def _definir_data(campo, dia: date) -> None:
+def _definir_data(campo, dia: date, tentativas: int = 3) -> None:
     """Foca o campo e digita DDMMAAAA (o TDateTimePicker avanca de segmento sozinho a
     cada 2 digitos, igual digitar num celular). Confere lendo de volta - e a unica forma
-    de saber se realmente pegou, sem alguem olhando a tela."""
-    campo.set_focus()
-    campo.type_keys("{HOME}")
-    campo.type_keys(f"{dia:%d}{dia:%m}{dia:%Y}")
-    time.sleep(0.3)
-    texto = campo.window_text()
-    if dia.strftime("%d/%m/%Y") not in texto:
-        raise RoboIndisponivel(f"Campo de data ficou {texto!r}, esperado {dia:%d/%m/%Y}.")
+    de saber se realmente pegou, sem alguem olhando a tela.
+
+    `pause` entre teclas: na primeira tentativa (sem pausa) o controle perdeu/trocou
+    dígitos (ex.: pediu 02/10/2026 e ficou 26/10/2026) - sinal de que ele nao acompanha
+    um type_keys "rápido demais" tecla-a-tecla. Tenta de novo mais devagar antes de
+    desistir, em vez de já gravar uma data errada."""
+    esperado = dia.strftime("%d/%m/%Y")
+    for tentativa in range(1, tentativas + 1):
+        campo.set_focus()
+        campo.type_keys("{HOME}")
+        campo.type_keys(f"{dia:%d}{dia:%m}{dia:%Y}", pause=0.1 * tentativa)
+        time.sleep(0.3)
+        texto = campo.window_text()
+        if esperado in texto:
+            return
+    raise RoboIndisponivel(f"Campo de data ficou {texto!r} depois de {tentativas} tentativa(s), esperado {esperado}.")
 
 
 def _exportar_xls(rep, dia: date) -> Path:
