@@ -154,8 +154,6 @@ SELECT
     COALESCE(a.total, 0)                                        AS ajustes_total,
     COALESCE(s.qtd, 0)                                          AS saidas_total,
     COALESCE(s.valor, 0)                                        AS valor_saidas_total,
-    COALESCE(ec.qtd, 0)                                         AS entradas_compras_total,
-    COALESCE(ec.valor, 0)                                       AS valor_entradas_compras_total,
     p.saldo_inicial + COALESCE(a.total, 0) - COALESCE(s.qtd, 0)
         + COALESCE(ec.qtd, 0)                                   AS saldo_atual,
     p.preco_custo,
@@ -164,7 +162,12 @@ SELECT
     p.estoque_minimo,
     p.fornecedor,
     p.observacao,
-    p.ativo
+    p.ativo,
+    -- Novas (ao final de propósito: CREATE OR REPLACE VIEW do Postgres só aceita
+    -- colunas novas no fim da lista - inserir no meio quebra com InvalidTableDefinition
+    -- porque desloca a posição das colunas já existentes em produção).
+    COALESCE(ec.qtd, 0)                                         AS entradas_compras_total,
+    COALESCE(ec.valor, 0)                                       AS valor_entradas_compras_total
 FROM produtos p
 LEFT JOIN (
     SELECT m.cod_produto,
