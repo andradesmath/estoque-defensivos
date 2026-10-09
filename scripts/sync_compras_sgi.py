@@ -89,14 +89,35 @@ def _conectar_app():
     return Application(backend="win32").connect(title_re=TITULO_PRINCIPAL + ".*", timeout=5)
 
 
+# Ordem fixa dos itens no popup do combo Empresa - vista ao vivo (print_control_
+# identifiers + computer-use) identicamente em duas aberturas diferentes do dropdown,
+# 09/10/2026. O popup e um TPopupDataList que desenha as proprias linhas (nao expoe
+# texto via window_text() nos descendentes, por isso nao da pra achar o item por texto -
+# so por posicao/indice).
+_EMPRESAS_ORDEM = [
+    "ALAOR SILVA RIBEIRO",
+    "CASA DE ADUBOS(ANTIGA)",
+    "PORTEIRA AGROCOMERCIAL",
+    "PORTEIRA PIATA",
+    "CASA DE ADUBOS CAFE BOM",
+]
+
+
 def _definir_empresa(campo, texto: str) -> None:
     """Confirmado via print_control_identifiers() em 09/10/2026: Empresa e um
     TDBLookupComboBox (combo ligado a um dataset), NAO um TComboBox nativo - por isso
     nem .select() nem as mensagens CB_* (CB_GETCOUNT voltou vazio) funcionam nele. O
-    dropdown dele abre como uma janela popup separada (visto ao vivo via computer-use -
-    clicar no combo mostrou uma lista normal com os 5 itens) - clica na seta do combo
-    (canto direito, onde fica o botao dropdown) e clica no item certo dentro do popup
-    que aparece."""
+    dropdown dele abre como uma janela popup separada (TPopupDataList) que desenha as
+    proprias linhas - clica na seta do combo pra abrir, acha a janela nova que aparece,
+    e clica na linha certa por posicao (ordem fixa em _EMPRESAS_ORDEM)."""
+    alvo = texto.strip().upper()
+    indices = [i for i, nome in enumerate(_EMPRESAS_ORDEM) if nome.strip().upper() == alvo]
+    if not indices:
+        raise RoboIndisponivel(
+            f"Empresa {texto!r} nao esta na ordem conhecida do popup (_EMPRESAS_ORDEM={_EMPRESAS_ORDEM})."
+        )
+    indice = indices[0]
+
     antes = {w.handle for w in Desktop(backend="win32").windows()}
     rect = campo.rectangle()
     campo.click_input(coords=(rect.width() - 10, rect.height() // 2))
@@ -104,29 +125,20 @@ def _definir_empresa(campo, texto: str) -> None:
     novas = [w for w in Desktop(backend="win32").windows() if w.handle not in antes]
     if not novas:
         raise RoboIndisponivel("Cliquei na seta do combo Empresa mas nenhum popup novo apareceu.")
+    popup = novas[0]
 
-    achou = None
-    for popup in novas:
-        for ctrl in [popup] + popup.descendants():
-            try:
-                if texto in (ctrl.window_text() or ""):
-                    achou = ctrl
-                    break
-            except Exception:  # noqa: BLE001 - alguns descendants nao dao pra ler texto
-                continue
-        if achou:
-            break
-    if achou is None:
-        raise RoboIndisponivel(
-            f"Popup do combo Empresa abriu mas nao achei o item {texto!r} nele "
-            f"(janelas novas: {[(w.class_name(), w.window_text()) for w in novas]})."
-        )
-    achou.click_input()
+    prect = popup.rectangle()
+    altura_linha = prect.height() / len(_EMPRESAS_ORDEM)
+    y = int((indice + 0.5) * altura_linha)
+    popup.click_input(coords=(prect.width() // 2, y))
     time.sleep(0.3)
 
     atual = campo.window_text()
     if texto not in atual:
-        raise RoboIndisponivel(f"Campo Empresa ficou {atual!r} depois de clicar em {texto!r} no popup.")
+        raise RoboIndisponivel(
+            f"Campo Empresa ficou {atual!r} depois de clicar na linha {indice} do popup "
+            f"(esperado {texto!r}; popup rect={prect}, altura_linha={altura_linha:.1f})."
+        )
 
 
 def _logar_sgi() -> None:
