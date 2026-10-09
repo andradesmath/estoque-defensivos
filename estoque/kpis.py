@@ -82,13 +82,37 @@ def _prep_ajustes(ajustes: pd.DataFrame) -> pd.DataFrame:
     return a.groupby(["cod_produto", "data"], as_index=False)[["quantidade"]].sum()
 
 
-def serie_saldo_diaria(produtos: pd.DataFrame, mov: pd.DataFrame, ajustes: pd.DataFrame, hoje: date) -> pd.DataFrame:
+def _prep_entradas(entradas) -> pd.DataFrame:
+    """Entradas por COMPRA (movimentacao_entrada_compra) agregadas por produto+dia.
+
+    Aceita None pra manter compatibilidade com quem chama sem elas (e com os testes
+    antigos): nesse caso devolve vazio, que soma zero."""
+    vazio = pd.DataFrame({"cod_produto": pd.Series(dtype="object"),
+                          "data": pd.Series(dtype="datetime64[ns]"),
+                          "quantidade_entrada": pd.Series(dtype="float64")})
+    if entradas is None or len(entradas) == 0:
+        return vazio
+    e = entradas.copy()
+    e["data"] = pd.to_datetime(e["data"])
+    e["quantidade_entrada"] = pd.to_numeric(e["quantidade_entrada"], errors="coerce").fillna(0.0)
+    return e.groupby(["cod_produto", "data"], as_index=False)[["quantidade_entrada"]].sum()
+
+
+def serie_saldo_diaria(produtos: pd.DataFrame, mov: pd.DataFrame, ajustes: pd.DataFrame,
+                       hoje: date, entradas=None) -> pd.DataFrame:
     """Saldo de FIM de dia por produto, de data_saldo_inicial até `hoje`. No dia da
     contagem o saldo é o saldo_inicial; movimentos com data <= contagem são ignorados
-    (mesma regra de v_saldo_produto)."""
+    (mesma regra de v_saldo_produto).
+
+    `entradas` são as ENTRADAS POR COMPRA (movimentacao_entrada_compra, do robô do SGI
+    desktop). Sem elas o painel mostrava saldo menor que o real: o JOINER aparecia
+    com -2 em 09/10/2026 (0 inicial + 1 de ajuste - 3 vendidos) enquanto a compra de
+    12 estava gravada e a view v_saldo_produto já devolvia 10 corretamente - a conta
+    aqui é que ignorava as compras."""
     p = _prep_produtos(produtos)
     m = _prep_mov(mov)
     a = _prep_ajustes(ajustes)
+    ent = _prep_entradas(entradas)
     hoje_ts = pd.Timestamp(hoje)
 
     frames = []
@@ -103,8 +127,10 @@ def serie_saldo_diaria(produtos: pd.DataFrame, mov: pd.DataFrame, ajustes: pd.Da
     g = pd.concat(frames, ignore_index=True)
     g = g.merge(m[["cod_produto", "data", "quantidade_saida"]], on=["cod_produto", "data"], how="left")
     g = g.merge(a, on=["cod_produto", "data"], how="left")
-    g[["quantidade_saida", "quantidade"]] = g[["quantidade_saida", "quantidade"]].fillna(0.0)
-    delta = g["quantidade"] - g["quantidade_saida"]
+    g = g.merge(ent, on=["cod_produto", "data"], how="left")
+    cols = ["quantidade_saida", "quantidade", "quantidade_entrada"]
+    g[cols] = g[cols].fillna(0.0)
+    delta = g["quantidade"] + g["quantidade_entrada"] - g["quantidade_saida"]
     g["delta"] = np.where(g["data"] > g["d0"], delta, 0.0)
     g = g.sort_values(["cod_produto", "data"])
     g["saldo"] = g["saldo_inicial"] + g.groupby("cod_produto")["delta"].cumsum()
@@ -132,13 +158,14 @@ def indicadores(
     cobertura_alvo: int = 30,
     excesso_dias: int = 120,
     dias_sem_giro: int = 30,
+    entradas=None,
 ) -> pd.DataFrame:
     p = _prep_produtos(produtos).reset_index(drop=True)
     if p.empty:
         return pd.DataFrame(columns=COLUNAS_INDICADORES)
     m = _prep_mov(mov)
     hoje_ts = pd.Timestamp(hoje)
-    serie = serie_saldo_diaria(produtos, mov, ajustes, hoje)
+    serie = serie_saldo_diaria(produtos, mov, ajustes, hoje, entradas)
 
     ini_global = hoje_ts - pd.Timedelta(days=janela_dias - 1)
     p["inicio_periodo"] = p["data_saldo_inicial"].apply(lambda d0: max(ini_global, d0 + pd.Timedelta(days=1)))
@@ -246,9 +273,10 @@ def resumo_geral(ind: pd.DataFrame) -> dict:
     }
 
 
-def evolucao_valor_estoque(produtos: pd.DataFrame, mov: pd.DataFrame, ajustes: pd.DataFrame, hoje: date) -> pd.DataFrame:
+def evolucao_valor_estoque(produtos: pd.DataFrame, mov: pd.DataFrame, ajustes: pd.DataFrame,
+                           hoje: date, entradas=None) -> pd.DataFrame:
     """Valor total do estoque a custo por dia (custo atual aplicado ao histórico)."""
-    serie = serie_saldo_diaria(produtos, mov, ajustes, hoje)
+    serie = serie_saldo_diaria(produtos, mov, ajustes, hoje, entradas)
     p = _prep_produtos(produtos)[["cod_produto", "preco_custo"]]
     s = serie.merge(p, on="cod_produto")
     s = s[s["preco_custo"].notna()]
