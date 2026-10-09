@@ -189,10 +189,15 @@ def _definir_empresa(campo, texto: str) -> None:
     # empresa estava selecionada antes), {DOWN} x indice anda ate a linha certa, {ENTER}
     # confirma - robusto a qualquer altura/posicao de linha real.
     # IMPORTANTE: tudo numa unica chamada de type_keys (1 string so) - chamadas
-    # separadas falharam com ElementNotVisible na 2a tecla, sinal de que o popup
-    # (janela transitoria) ja fica invisivel/muda de estado assim que a 1a tecla e
-    # processada, e verify_actionable() da proxima chamada ve esse estado intermediario.
-    popup.type_keys("{HOME}" + "{DOWN}" * indice + "{ENTER}")
+    # separadas falharam com ElementNotVisible na 2a tecla.
+    #
+    # IMPORTANTE #2: as teclas vao pro `campo` (o combo), NAO pro `popup` - o popup e so
+    # a renderizacao visual da lista; o foco real do teclado continua no combo (que foi
+    # quem recebeu o clique/F4/Alt+Down que abriu o popup), e e o combo quem processa
+    # Home/Down/Enter internamente e atualiza o popup em resposta. Mandar pro popup nao
+    # deu erro mas tambem nao fez nada (campo ficou vazio) - sinal de que o popup so
+    # escuta, nao e ele quem trata a tecla.
+    campo.type_keys("{HOME}" + "{DOWN}" * indice + "{ENTER}")
     time.sleep(0.3)
 
     atual = campo.window_text()
