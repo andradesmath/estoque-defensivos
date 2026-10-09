@@ -72,6 +72,12 @@ SGI_EXE = Path(os.environ.get("SGI_EXE_PATH", r"D:\SGI\SGI.exe"))
 # direto sem esse diretorio de trabalho certo deu erro "Cannot open file fundo.jpg"
 # (confirmado 09/10/2026).
 SGI_ATALHO = Path(os.environ.get("SGI_ATALHO_PATH", r"C:\Users\Admin\Desktop\SGI - Atalho.lnk"))
+TITULO_LOGIN = "Senha..."
+# Empresa certa pro relatorio de Compras (compra consolidada das duas lojas) - confirmado
+# com o usuario em 09/10/2026, dentre as opcoes do combo: ALAOR SILVA RIBEIRO, CASA DE
+# ADUBOS(ANTIGA), PORTEIRA AGROCOMERCIAL, PORTEIRA PIATA, CASA DE ADUBOS CAFE BOM (esta
+# ultima vem selecionada por padrao na tela - NAO e a certa pra esse relatorio).
+EMPRESA_LOGIN = os.environ.get("SGI_EMPRESA", "PORTEIRA AGROCOMERCIAL")
 
 
 class RoboIndisponivel(Exception):
@@ -81,6 +87,22 @@ class RoboIndisponivel(Exception):
 
 def _conectar_app():
     return Application(backend="win32").connect(title_re=TITULO_PRINCIPAL + ".*", timeout=5)
+
+
+def _definir_empresa(campo, texto: str) -> None:
+    """O combo Empresa pode ser DROPDOWN (aceita digitar) ou DROPDOWNLIST (so selecao) -
+    tenta .select() (selecao por texto exato, o jeito robusto) primeiro; se o combo nao
+    suportar isso (ComboBoxWrapper nao bate com a classe real do controle), cai pra
+    digitar o texto direto. Confere lendo de volta - mesma logica de _definir_data."""
+    try:
+        campo.select(texto)
+    except Exception:
+        campo.set_focus()
+        campo.type_keys("^a{DELETE}")
+        campo.type_keys(texto, with_spaces=True)
+    atual = campo.window_text()
+    if texto not in atual:
+        raise RoboIndisponivel(f"Campo Empresa ficou {atual!r} depois de tentar definir {texto!r}.")
 
 
 def _logar_sgi() -> None:
@@ -110,20 +132,40 @@ def _logar_sgi() -> None:
             "login pode ter um layout diferente do esperado, ou algum dialogo (ex. erro) "
             "ficou aberto bloqueando. Confira a tela."
         )
-    # Login nao testado ao vivo ainda (SGI ja estava aberto/logado quando o menu foi
-    # inspecionado em 09/10/2026) - se a tela de login tiver campos/botao diferentes
-    # disso, essa parte precisa de ajuste com o SGI fechado pra testar.
-    main = app.window(title_re=TITULO_PRINCIPAL + ".*")
+    # A tela de login ("Senha...") e uma janela PROPRIA (dialogo top-level do mesmo
+    # processo), NAO campos dentro da janela principal - confirmado ao vivo em
+    # 09/10/2026 (main.children(class_name="Edit") nao achava nada, por isso o login
+    # nunca rodava e o fluxo seguia pro menu com o dialogo bloqueando tudo).
+    login = app.window(title=TITULO_LOGIN)
     try:
-        main.wait("ready", timeout=10)
+        login.wait("visible", timeout=15)
     except PywinautoTimeoutError:
-        pass
-    campos = main.children(class_name="Edit")
-    if len(campos) >= 2:
-        campos[0].set_edit_text(usuario)
-        campos[1].set_edit_text(senha)
-        campos[1].type_keys("{ENTER}")
-        time.sleep(2.0)
+        raise RoboIndisponivel(
+            f"SGI abriu mas a janela de login ('{TITULO_LOGIN}') nao apareceu em 15s."
+        )
+
+    campos = login.children(class_name="Edit")
+    if len(campos) != 2:
+        raise RoboIndisponivel(
+            f"Esperava 2 campos (Usuario/Senha) na tela de login, achei {len(campos)}."
+        )
+    campos.sort(key=lambda w: w.rectangle().left)
+    campo_usuario, campo_senha = campos  # esquerda = Usuario, direita = Senha (mesma linha)
+    campo_usuario.set_edit_text(usuario)
+    campo_senha.set_edit_text(senha)
+
+    combos = [c for c in login.children() if "combobox" in c.class_name().lower()]
+    if len(combos) != 2:
+        raise RoboIndisponivel(
+            f"Esperava 2 campos tipo combo (Empresa/Modulo) na tela de login, achei "
+            f"{len(combos)} (classes vistas: {[c.class_name() for c in login.children()]})."
+        )
+    combos.sort(key=lambda w: w.rectangle().left)
+    campo_empresa, _campo_modulo = combos  # esquerda = Empresa, direita = Modulo
+    _definir_empresa(campo_empresa, EMPRESA_LOGIN)
+
+    login.child_window(title_re="&?Confirmar", class_name="TBitBtn").click()
+    time.sleep(2.0)
 
 
 def conectar_relatorio():
