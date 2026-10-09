@@ -144,21 +144,26 @@ def _logar_sgi() -> None:
             f"SGI abriu mas a janela de login ('{TITULO_LOGIN}') nao apareceu em 15s."
         )
 
-    campos = login.children(class_name="Edit")
+    # "Edit" generico nao bateu (achei 0) - mesmo padrao dos outros controles Delphi
+    # (TDateTimePicker, TBitBtn): provavelmente a classe real e "TEdit". Filtra por
+    # "edit" no nome em vez de exigir o nome exato.
+    todos = login.children()
+    campos = [c for c in todos if "edit" in c.class_name().lower()]
     if len(campos) != 2:
         raise RoboIndisponivel(
-            f"Esperava 2 campos (Usuario/Senha) na tela de login, achei {len(campos)}."
+            f"Esperava 2 campos (Usuario/Senha) na tela de login, achei {len(campos)} "
+            f"(classes vistas: {[c.class_name() for c in todos]})."
         )
     campos.sort(key=lambda w: w.rectangle().left)
     campo_usuario, campo_senha = campos  # esquerda = Usuario, direita = Senha (mesma linha)
     campo_usuario.set_edit_text(usuario)
     campo_senha.set_edit_text(senha)
 
-    combos = [c for c in login.children() if "combobox" in c.class_name().lower()]
+    combos = [c for c in todos if "combobox" in c.class_name().lower()]
     if len(combos) != 2:
         raise RoboIndisponivel(
             f"Esperava 2 campos tipo combo (Empresa/Modulo) na tela de login, achei "
-            f"{len(combos)} (classes vistas: {[c.class_name() for c in login.children()]})."
+            f"{len(combos)} (classes vistas: {[c.class_name() for c in todos]})."
         )
     combos.sort(key=lambda w: w.rectangle().left)
     campo_empresa, _campo_modulo = combos  # esquerda = Empresa, direita = Modulo
