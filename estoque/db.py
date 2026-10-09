@@ -501,6 +501,36 @@ def dias_sincronizados_compras(loja: str) -> set[date]:
     return {r[0] for r in linhas}
 
 
+def possiveis_duplicatas_compra(dia: date, codigos: list[str]) -> list[dict]:
+    """Entradas manuais (ajustes de quantidade POSITIVA) que ja existem para esses
+    produtos nesse dia - ou seja, candidatas a contar em dobro quando o robo de compras
+    gravar a mesma entrada.
+
+    So olha produtos CADASTRADOS (os ajustes tem FK pra produtos), que sao justamente
+    os monitorados - compra de coleira/racao nao entra no controle e nao gera ajuste.
+    Em 02/10/2026 esse caso aconteceu de verdade: o JOINER tinha um ajuste manual
+    'ENTRADA NF' de +12 que teria somado em cima da compra importada.
+
+    Sem pandas de proposito: roda no robo local, que nao tem pandas (Python 32-bit)."""
+    if not codigos:
+        return []
+    with get_engine().connect() as conn:
+        linhas = conn.execute(
+            text("""SELECT a.id, a.cod_produto, p.descricao, a.quantidade, a.tipo, a.observacao
+                    FROM ajustes a
+                    JOIN produtos p ON p.cod_produto = a.cod_produto
+                    WHERE a.data = :d AND a.quantidade > 0
+                      AND a.cod_produto = ANY(:cods)
+                    ORDER BY a.cod_produto"""),
+            {"d": dia, "cods": list(codigos)},
+        ).fetchall()
+    return [
+        {"id": r[0], "cod_produto": r[1], "descricao": r[2],
+         "quantidade": r[3], "tipo": r[4], "observacao": r[5]}
+        for r in linhas
+    ]
+
+
 def listar_sync_dias_compras(limite: int = 200) -> pd.DataFrame:
     return _df("""SELECT loja, data, n_produtos, qtd_total, valor_total, sincronizado_em
                   FROM sync_dias_compras ORDER BY data DESC, loja LIMIT :l""", l=limite)

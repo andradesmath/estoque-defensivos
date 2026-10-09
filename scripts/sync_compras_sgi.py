@@ -106,6 +106,101 @@ def _conectar_app():
     return Application(backend="win32").connect(title_re=TITULO_PRINCIPAL + ".*", timeout=5)
 
 
+_HWND_TOPMOST = -1
+_HWND_NOTOPMOST = -2
+_SWP_NOMOVE = 0x0002
+_SWP_NOSIZE = 0x0001
+_SWP_SHOWWINDOW = 0x0040
+_SW_RESTORE = 9
+
+# Janelas que o robo colocou em "sempre visivel" e precisa devolver ao normal no fim.
+_TOPMOST_APLICADO: list = []
+
+
+def _trazer_para_frente(janela) -> None:
+    """Poe a janela do SGI REALMENTE na frente, e nao so com foco nominal.
+
+    Necessario porque o robo roda a partir do terminal: o SGI abre em segundo plano e
+    o Windows recusa SetForegroundWindow vindo de um processo que nao esta em
+    primeiro plano. Resultado em 09/10/2026: o popup de empresas ficou atras das
+    janelas do Claude/VSCode e o clique teria caido no programa errado.
+
+    Dois mecanismos, porque um so nao basta:
+    1. SetWindowPos TOPMOST - poe a janela acima das outras sem depender de foreground;
+    2. AttachThreadInput + SetForegroundWindow - da o foco de teclado de verdade
+       (o Windows so permite quando a nossa thread esta anexada a da janela alvo).
+    O TOPMOST e desfeito no fim da execucao (_liberar_topmost)."""
+    u = ctypes.windll.user32
+    try:
+        hwnd = janela.handle
+    except Exception:  # noqa: BLE001
+        return
+    try:
+        u.ShowWindow(hwnd, _SW_RESTORE)
+        u.SetWindowPos(hwnd, _HWND_TOPMOST, 0, 0, 0, 0,
+                       _SWP_NOMOVE | _SWP_NOSIZE | _SWP_SHOWWINDOW)
+        if hwnd not in _TOPMOST_APLICADO:
+            _TOPMOST_APLICADO.append(hwnd)
+        tid_alvo = u.GetWindowThreadProcessId(hwnd, None)
+        tid_nosso = ctypes.windll.kernel32.GetCurrentThreadId()
+        u.AttachThreadInput(tid_nosso, tid_alvo, True)
+        u.SetForegroundWindow(hwnd)
+        u.AttachThreadInput(tid_nosso, tid_alvo, False)
+    except Exception:  # noqa: BLE001 - e so uma ajuda; o clique seguro ainda protege
+        pass
+    time.sleep(0.4)
+
+
+def _liberar_topmost() -> None:
+    """Devolve as janelas ao comportamento normal - o SGI nao pode ficar
+    'sempre visivel' depois que o robo termina."""
+    u = ctypes.windll.user32
+    for hwnd in _TOPMOST_APLICADO:
+        try:
+            u.SetWindowPos(hwnd, _HWND_NOTOPMOST, 0, 0, 0, 0, _SWP_NOMOVE | _SWP_NOSIZE)
+        except Exception:  # noqa: BLE001
+            continue
+    _TOPMOST_APLICADO.clear()
+
+
+class _POINT(ctypes.Structure):
+    _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
+
+
+def _pid_sob_o_ponto(x: int, y: int) -> int:
+    """PID do processo dono da janela que esta SOB o ponto (x, y) da tela."""
+    hwnd = ctypes.windll.user32.WindowFromPoint(_POINT(x, y))
+    pid = ctypes.c_ulong(0)
+    ctypes.windll.user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+    return pid.value
+
+
+def _clique_seguro(x: int, y: int, pid_esperado: int, oque: str, trazer_frente=None) -> None:
+    """Clica em (x, y) SO SE a janela sob o ponto for do processo do SGI.
+
+    Sem essa guarda, um clique sintetico cai em qualquer app que esteja por cima:
+    em 09/10/2026 o robo clicou na janela do Claude porque o SGI perdeu o primeiro
+    plano no meio da operacao. Alem de nao selecionar nada, clicar as cegas na tela
+    de outro programa e inaceitavel - entao: confere, tenta trazer o SGI pra frente
+    uma vez, e se ainda assim o ponto nao for dele, para com erro claro em vez de
+    clicar."""
+    for tentativa in range(2):
+        if _pid_sob_o_ponto(x, y) == pid_esperado:
+            mouse.click(button="left", coords=(x, y))
+            return
+        if tentativa == 0 and trazer_frente is not None:
+            try:
+                trazer_frente()
+            except Exception:  # noqa: BLE001
+                pass
+            time.sleep(0.6)
+    raise RoboIndisponivel(
+        f"Ia clicar em {oque} na posicao ({x}, {y}), mas quem esta ali e outro "
+        "programa, nao o SGI (alguma janela ficou por cima). Nao cliquei. Rode de "
+        "novo sem mexer no computador enquanto o robo trabalha."
+    )
+
+
 # Ordem fixa dos itens no popup do combo Empresa - vista ao vivo (print_control_
 # identifiers + computer-use) identicamente em duas aberturas diferentes do dropdown,
 # 09/10/2026. O popup e um TPopupDataList que desenha as proprias linhas (nao expoe
@@ -135,13 +230,10 @@ def _definir_empresa(campo, texto: str, metodo: str = "clique") -> None:
         )
     indice = indices[0]
 
-    # Garante que a janela de login esta em primeiro plano antes de interagir - uma
-    # tentativa sintetica pode nao abrir o dropdown se o dialogo pai nao estiver ativo.
-    try:
-        campo.top_level_parent().set_focus()
-    except Exception:  # noqa: BLE001 - foco e so uma ajuda, nao impede a tentativa
-        pass
-    time.sleep(0.2)
+    # Poe a janela de login REALMENTE na frente antes de interagir (ver
+    # _trazer_para_frente): rodando a partir do terminal, o SGI fica em segundo plano
+    # e tanto o dropdown quanto o clique acabariam atras/em cima de outro programa.
+    _trazer_para_frente(campo.top_level_parent())
 
     rect = campo.rectangle()
 
@@ -194,11 +286,31 @@ def _definir_empresa(campo, texto: str, metodo: str = "clique") -> None:
     # (campo.window_text()) era impossivel de passar - window_text() de um
     # TDBLookupComboBox e SEMPRE '' (ele desenha o proprio texto a partir do dataset),
     # entao o clique, que ja funcionava, parecia estar falhando.
-    # ESPERA a lista renderizar. Sem isso o popup aparece VAZIO (so a moldura - o
-    # usuario capturou exatamente isso em 09/10/2026) e qualquer interacao cai no
-    # nada, deixando a empresa no padrao. No teste manual isso nao acontecia porque
-    # havia segundos entre abrir e clicar (round-trip de screenshot).
-    time.sleep(1.2)
+    # ESPERA a lista renderizar E ficar do tamanho da lista COMPLETA. Sem isso o popup
+    # aparece vazio/curto (o usuario capturou a moldura vazia em 09/10/2026) e o
+    # clique cai na linha errada ou em nada: a altura do popup e o unico indicador
+    # disponivel de quantos itens ja entraram (o conteudo e desenhado, nao da pra ler).
+    # Com as 5 empresas o popup mede 67px (~13.4px por linha) - exigir pelo menos
+    # ~90% disso garante que todas as linhas estao la antes de mirar numa posicao.
+    altura_esperada = 13.4 * len(_EMPRESAS_ORDEM)
+    for _ in range(15):
+        time.sleep(0.3)
+        try:
+            if popup.rectangle().height() >= altura_esperada * 0.9:
+                break
+        except Exception:  # noqa: BLE001
+            continue
+    try:
+        h = popup.rectangle().height()
+    except Exception:  # noqa: BLE001
+        h = 0
+    if h < altura_esperada * 0.9:
+        raise RoboIndisponivel(
+            f"O popup da Empresa ficou com {h}px de altura, esperado ~{altura_esperada:.0f}px "
+            f"para {len(_EMPRESAS_ORDEM)} itens - a lista nao carregou inteira, entao "
+            "clicar numa posicao selecionaria a empresa errada."
+        )
+    time.sleep(0.4)
 
     if metodo == "setas":
         # Caminho que o usuario faz na mao: a lista abre com a ULTIMA empresa
@@ -228,7 +340,8 @@ def _definir_empresa(campo, texto: str, metodo: str = "clique") -> None:
         time.sleep(0.2)
         mouse.move(coords=(x_abs, y_abs))
         time.sleep(0.4)  # deixa o destaque pousar na linha certa
-        mouse.click(button="left", coords=(x_abs, y_abs))
+        _clique_seguro(x_abs, y_abs, campo.process_id(), f"a linha '{texto}' da lista de empresas",
+                       trazer_frente=lambda: campo.top_level_parent().set_focus())
     time.sleep(0.4)
 
     # Fecha o popup se ele tiver ficado aberto (senao o Confirmar nao e clicavel).
@@ -321,6 +434,7 @@ def _preencher_login(app, metodo_empresa: str = "clique") -> None:
     # ainda conecta no banco remoto ("Criando Conexao com Banco de Dados") e isso
     # passou de 15s numa execucao real (09/10/2026). Espera generosa, configuravel.
     espera_login = float(os.environ.get("SYNC_COMPRAS_TIMEOUT_LOGIN", "120"))
+    print("  [login] procurando a tela 'Senha...'")
     login = app.window(title=TITULO_LOGIN)
     try:
         login.wait("exists visible", timeout=espera_login)
@@ -353,6 +467,7 @@ def _preencher_login(app, metodo_empresa: str = "clique") -> None:
         )
     combos.sort(key=lambda w: w.rectangle().left)
     campo_empresa, _campo_modulo = combos  # esquerda = Empresa, direita = Modulo
+    print(f"  [login] usuario preenchido; escolhendo empresa por '{metodo_empresa}'")
     _definir_empresa(campo_empresa, EMPRESA_LOGIN, metodo_empresa)
 
     # O titulo real do botao e "Confir&mar" - o & (acelerador) fica no MEIO da palavra,
@@ -367,6 +482,7 @@ def _preencher_login(app, metodo_empresa: str = "clique") -> None:
             "Nao achei o botao Confirmar na tela de login "
             f"(botoes vistos: {[b.window_text() for b in botoes]})."
         )
+    print("  [login] confirmando")
     confirmar[0].click()
     time.sleep(2.0)
 
@@ -376,6 +492,18 @@ def _preencher_login(app, metodo_empresa: str = "clique") -> None:
     # estivesse errada o SGI responderia "Usuario/Senha Invalido(a) para esta Empresa!"
     # num dialogo de erro (visto ao vivo em 09/10/2026). Sem dialogo = logou = empresa
     # certa.
+    # Espera a tela de login SUMIR - e a prova de que o login foi aceito. Sem isso
+    # quem chama reencontra a janela ainda no ar e conclui que o SGI segue deslogado,
+    # refazendo o login (visto no log de 09/10/2026: "confirmando" seguido de "aberto
+    # porem deslogado - logando", e na 2a vez a tela ja nao existia -> 120s de espera).
+    for _ in range(40):
+        try:
+            if not login.exists() or not login.is_visible():
+                break
+        except Exception:  # noqa: BLE001 - sumiu = logou
+            break
+        time.sleep(0.5)
+
     erro = app.window(title_re="Erro.*")
     if erro.exists(timeout=3):
         try:
@@ -434,6 +562,8 @@ def _esperar_sgi_pronto(main) -> None:
     limite = float(os.environ.get("SYNC_COMPRAS_TIMEOUT_CARGA", "300"))
     fim = time.time() + limite
     ultimo_aviso = time.time()
+    if not _pronto():
+        print("  [SGI] carregando dados pos-login...")
     while not _pronto():
         if time.time() > fim:
             raise RoboIndisponivel(
@@ -457,6 +587,7 @@ def _fazer_logoff(main) -> bool:
     for ctrl in filhos:
         try:
             if (ctrl.window_text() or "").strip().replace("&", "").upper() == "LOGOFF":
+                print(f"  [SGI] clicando em Logoff ({ctrl.class_name()})")
                 ctrl.click_input()
                 time.sleep(1.5)
                 return True
@@ -476,23 +607,30 @@ def conectar_relatorio():
     -> abre pelo menu Relatorios>Compras>Relacao de Custo de Compras (confirmado
     manualmente em 09/10/2026); (3) SGI fechado -> abre e loga sozinho (ver _logar_sgi,
     testado e validado ao vivo em 09/10/2026) e cai no caso (2)."""
+    ja_logou = False
     try:
         app = _conectar_app()
+        print("  [SGI] ja estava aberto - reaproveitando")
     except (ElementNotFoundError, PywinautoTimeoutError):
         # Usa o app que _logar_sgi devolve (conectado ao processo que ele mesmo abriu),
         # em vez de reconectar por titulo - reconectar podia cair num SGI antigo.
+        print("  [SGI] fechado - abrindo pelo atalho")
         app = _logar_sgi()
+        ja_logou = True
 
     # SGI aberto mas DESLOGADO (alguem clicou em Logoff, ou abriu e nao entrou): a
     # janela principal existe e a faixa do rodape ainda mostra a empresa da sessao
     # anterior, entao sem isto o robo seguia como se a sessao fosse valida e lia a
     # empresa errada (visto em 09/10/2026 - parou achando que estava em CASA DE ADUBO
     # quando na verdade nao estava logado em nada).
+    # `ja_logou` evita refazer o login que _logar_sgi acabou de fazer.
     login = app.window(title=TITULO_LOGIN)
-    if login.exists():
+    if not ja_logou and login.exists() and login.is_visible():
+        print("  [SGI] aberto porem deslogado (tela de login na frente) - logando")
         _preencher_login(app)
 
     main = app.window(title_re=TITULO_PRINCIPAL + ".*")
+    _trazer_para_frente(main)  # o resto (datas, botoes) tambem depende de cliques reais
 
     # Logo apos o login, o SGI mostra um splash "Conectado! Carregando
     # inventarios/clientes..." que deixa o menu principal desabilitado ate terminar -
@@ -520,22 +658,43 @@ def conectar_relatorio():
     # Comeca pelo metodo DIFERENTE do usado no login inicial (que foi o primeiro da
     # lista) - repetir o mesmo que acabou de errar seria so perder um login inteiro.
     for metodo in _METODOS_EMPRESA[1:] + _METODOS_EMPRESA[:1]:
-        ativa = _empresa_ativa(main)
+        # Le com tolerancia: logo apos o login a faixa pode ainda estar mostrando a
+        # sessao anterior por alguns instantes. Dar o veredito cedo demais faria o robo
+        # desfazer um login que estava CERTO (e foi o que pareceu acontecer em
+        # 09/10/2026: logou em PORTEIRA e mesmo assim refez tudo).
+        ativa = ""
+        for _ in range(6):
+            ativa = _empresa_ativa(main)
+            if ativa and ativa.strip().upper() == EMPRESA_LOGIN.strip().upper():
+                break
+            time.sleep(1.0)
         if not ativa:
             print("  AVISO: nao achei a faixa 'Licenciado para ...' pra conferir a "
                   "empresa logada - seguindo, mas sem essa garantia.")
             break
         if ativa.strip().upper() == EMPRESA_LOGIN.strip().upper():
+            print(f"  [SGI] empresa confirmada: {ativa}")
             break
         print(f"  logou em {ativa!r} (esperado {EMPRESA_LOGIN!r}) - refazendo o login "
               f"escolhendo a empresa por '{metodo}'...")
-        if not _fazer_logoff(main):
-            raise RoboIndisponivel(
-                f"O SGI esta logado na empresa {ativa!r}, e nao em {EMPRESA_LOGIN!r}, e "
-                "nao achei o botao Logoff pra corrigir sozinho. Faca Logoff e entre em "
-                f"{EMPRESA_LOGIN} na mao (ou feche o SGI e rode de novo)."
-            )
-        _preencher_login(app, metodo)
+        if _fazer_logoff(main):
+            _preencher_login(app, metodo)
+        else:
+            # Os botoes da barra do SGI nem sempre expoem texto, entao o Logoff pode
+            # nao ser encontrado - em 09/10/2026 isso deixava o robo num beco sem
+            # saida. Fechar e reabrir chega no mesmo lugar (tela de login) sem
+            # depender de achar botao nenhum.
+            print("  [SGI] nao achei o botao Logoff - fechando e reabrindo o SGI")
+            try:
+                app.kill(soft=False)
+            except Exception as e:  # noqa: BLE001
+                raise RoboIndisponivel(
+                    f"O SGI esta logado em {ativa!r} e nao consegui nem deslogar nem "
+                    f"fechar pra corrigir ({e}). Feche o SGI na mao e rode de novo."
+                ) from e
+            time.sleep(3.0)
+            app = _logar_sgi()
+            main = app.window(title_re=TITULO_PRINCIPAL + ".*")
         _esperar_sgi_pronto(main)
     else:
         ativa = _empresa_ativa(main)
@@ -548,6 +707,7 @@ def conectar_relatorio():
 
     rep = main.child_window(title=TITULO_RELATORIO, class_name=CLASSE_RELATORIO)
     if not rep.exists():
+        print("  [SGI] abrindo o relatorio pelo menu Relatorios > Compras")
         main.menu_select("Relatórios->Compras->Relação de Custo de Compras")
         rep = main.child_window(title=TITULO_RELATORIO, class_name=CLASSE_RELATORIO)
         try:
@@ -677,8 +837,14 @@ def _exportar_xls(app, rep, dia: date) -> Path:
     campo_nome.type_keys("{ENTER}")
 
     for _ in range(20):
-        if destino.exists() and destino.stat().st_size > 0:
-            return destino
+        try:
+            if destino.exists() and destino.stat().st_size > 0:
+                return destino
+        except OSError:
+            # Corrida com o proprio Explorer criando/regravando o arquivo: exists()
+            # pode dar True e o stat() seguinte falhar com "arquivo nao encontrado".
+            # Isso nao e falha do dia - e so esperar o proximo ciclo.
+            pass
         time.sleep(0.5)
     raise RoboIndisponivel(f"Arquivo {destino} nao apareceu apos clicar em Gerar Arq.")
 
@@ -784,16 +950,33 @@ def main(argv=None) -> int:
             loja, dia, linhas, permitir_zerar=args.permitir_zerar)
 
     print(f"{len(dias)} dia(s) a sincronizar: " + ", ".join(f"{d:%d/%m}" for d in dias))
-    erros = []
-    for dia in dias:
-        try:
-            processar_dia(app, rep, dia, gravar, args.dry_run)
-        except Exception as e:  # noqa: BLE001 - um dia ruim nao pode travar os outros
-            erros.append(f"{dia:%d/%m/%Y}: {e}")
-            print(f"  [{dia:%d/%m/%Y}] ERRO: {e}")
+
+    def _rodar(lista):
+        """Processa a lista de dias e devolve (falhados, mensagens de erro)."""
+        falhou, msgs = [], []
+        for dia in lista:
+            try:
+                processar_dia(app, rep, dia, gravar, args.dry_run)
+            except Exception as e:  # noqa: BLE001 - um dia ruim nao pode travar os outros
+                falhou.append(dia)
+                msgs.append(f"{dia:%d/%m/%Y}: {e}")
+                print(f"  [{dia:%d/%m/%Y}] ERRO: {e}")
+        return falhou, msgs
+
+    falhou, erros = _rodar(dias)
+
+    # Uma segunda passada nos dias que falharam. A exportacao do SGI escorrega de vez
+    # em quando - quase sempre no PRIMEIRO dia da execucao, e sempre no mesmo ponto:
+    # o .xls as vezes nao aparece a tempo ou fica preso ("arquivo em uso", "arquivo
+    # nao encontrado"). Repetir o mesmo dia sempre resolveu, e repetir e seguro
+    # porque a gravacao e idempotente (upsert por cod_produto + data + loja).
+    if falhou:
+        print(f"\nRefazendo {len(falhou)} dia(s) que falharam: "
+              + ", ".join(f"{d:%d/%m}" for d in falhou))
+        falhou, erros = _rodar(falhou)
 
     if erros:
-        print("\nFalhas nessa execucao:")
+        print("\nFalhas nessa execucao (mesmo apos refazer):")
         for e in erros:
             print(" -", e)
         return 1
@@ -802,4 +985,10 @@ def main(argv=None) -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        codigo = main()
+    finally:
+        # Sempre devolve as janelas ao normal - o SGI nao pode ficar "sempre visivel"
+        # por cima de tudo depois que o robo termina, nem quando ele termina com erro.
+        _liberar_topmost()
+    sys.exit(codigo)

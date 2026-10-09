@@ -6,8 +6,15 @@
 # Sem pandas de propósito: não existe build pronta de pandas para Windows 32 bits em
 # nenhuma versão compatível com Python 3.11 (só compila do zero, exige toolchain que
 # essa máquina não tem). O parser usa xlrd (puro Python) em vez de pandas.
+#
+# pg8000 (e não psycopg2-binary) pelo mesmo motivo: psycopg2-binary também não tem build
+# pronta para Windows 32 bits, e compilar exige o pg_config/toolchain do Postgres. pg8000
+# é driver Postgres em puro Python. O .env desta máquina aponta para ele no esquema da
+# URL: DATABASE_URL=postgresql+pg8000://...  (o painel e o GitHub Actions seguem com
+# psycopg2 normalmente - ver estoque/db.py).
 pywinauto>=0.6.9
 xlrd>=2.0.1
 SQLAlchemy>=2.0.0
-psycopg2-binary>=2.9.9
+pg8000>=1.30.0
 python-dotenv>=1.0.0
+tzdata>=2024.1

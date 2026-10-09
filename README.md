@@ -119,6 +119,65 @@ ative o cron. Em falha, o workflow sobe screenshot/HTML/PDF como artefato (7 dia
 Flags: `--loja`, `--data DD/MM/AAAA`, `--desde`, `--janela N`, `--forcar-tudo`,
 `--permitir-zerar`, `--dry-run`, `--headed`.
 
+### 6. Robô de COMPRAS (SGI desktop) e o agendamento ao ligar o notebook
+
+As **entradas por compra** só existem no SGI **desktop** (não no portal web), e o banco do SGI
+não aceita conexão direta — então a única automação possível é dirigir a interface do próprio
+`SGI.exe`, nesta máquina, com `scripts/sync_compras_sgi.py`. Ele abre o SGI, loga, escolhe a
+empresa **PORTEIRA AGROCOMERCIAL**, abre *Relatórios > Compras > Relação de Custo de Compras*,
+percorre dia a dia, exporta o `.xls` e grava em `movimentacao_entrada_compra` (upsert por
+`cod_produto + data + loja`, então rodar de novo não soma duas vezes).
+
+Requisitos: **Python 32 bits** (mesma arquitetura do SGI.exe) e
+`py -3.11-32 -m pip install -r requirements-local-robo-compras.txt`. No `.env` desta máquina:
+`SGI_SENHA_DESKTOP` (a senha do desktop é diferente da do portal web, que fica em `SGI_SENHA`)
+e `DATABASE_URL=postgresql+pg8000://...`.
+
+```bash
+py -3.11-32 scripts\sync_compras_sgi.py --dry-run    # mostra o que entraria, sem gravar
+py -3.11-32 scripts\sync_compras_sgi.py              # grava
+```
+
+**Enquanto roda, não use o computador**: a automação depende de cliques e teclas reais, e o
+robô põe a janela do SGI à frente (desfaz isso ao terminar). Se algo passar na frente, ele
+**não clica** — para com erro, em vez de clicar no programa errado.
+
+**Trava de empresa**: antes de buscar qualquer dado, o robô lê a faixa *"Licenciado para ..."*
+do rodapé do SGI e só segue se for a empresa esperada; se não for, desloga e tenta de novo
+com outro jeito de escolher a empresa. Isso existe porque uma execução chegou a rodar 18 dias
+inteiros logada na empresa errada (vinha tudo vazio).
+
+**Aviso de contagem em dobro**: o saldo soma ajustes manuais **e** entradas por compra. Se um
+produto monitorado já tiver ajuste de entrada lançado à mão no mesmo dia, o robô imprime
+`!! ATENCAO` com o número do ajuste — confira antes de gravar.
+
+#### Agendamento (gatilho "ao fazer logon")
+
+`scripts/sync_compras_sgi_logon.bat` é o que a tarefa chama: fixa a pasta do projeto e guarda
+a saída em `logs/compras_AAAA-MM-DD.log`. Não leva data: o robô consulta `sync_dias_compras`
+e busca sozinho os dias que faltam — **os dias em que o notebook ficou desligado entram no
+próximo logon**.
+
+Criar a tarefa (PowerShell **como administrador**, uma vez só):
+
+```powershell
+schtasks /create /tn "Estoque - Compras SGI (logon)" ^
+  /tr "C:\Users\Admin\Documents\estoque-defensivos\estoque-defensivos\scripts\sync_compras_sgi_logon.bat" ^
+  /sc onlogon /delay 0002:00 /rl highest /f
+```
+
+`/delay 0002:00` espera 2 minutos após o logon (dá tempo de a rede subir). Para conferir,
+rodar na hora ou remover:
+
+```powershell
+schtasks /query /tn "Estoque - Compras SGI (logon)" /v /fo list
+schtasks /run   /tn "Estoque - Compras SGI (logon)"
+schtasks /delete /tn "Estoque - Compras SGI (logon)" /f
+```
+
+A tarefa dispara em **todo** logon; como o robô só busca o que falta, nos logons seguintes do
+mesmo dia ele não tem o que fazer e sai rápido.
+
 ## Testes
 
 ```bash
