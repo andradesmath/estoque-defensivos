@@ -79,7 +79,22 @@ def _database_url() -> str:
 
 @lru_cache(maxsize=1)
 def get_engine():
-    return create_engine(_database_url(), pool_pre_ping=True, pool_recycle=300)
+    url = _database_url()
+    kwargs = {"pool_pre_ping": True, "pool_recycle": 300}
+    if url.startswith("postgresql+pg8000://"):
+        # pg8000 (robô local, Python 32-bit - ver parser_compras_sgi.py) não entende os
+        # parâmetros de query do psycopg2/libpq (sslmode, channel_binding) nem converte
+        # sozinho "ssl_context=true" da URL num SSLContext de verdade (gera
+        # "'str' object has no attribute 'wrap_socket'"). Monta o SSLContext aqui e tira
+        # esses parâmetros da URL - Neon exige TLS, então SEM isso a conexão cai sem TLS
+        # (ou nem conecta, dependendo da query string deixada no .env).
+        import ssl
+        from urllib.parse import urlsplit, urlunsplit
+
+        partes = urlsplit(url)
+        url = urlunsplit((partes.scheme, partes.netloc, partes.path, "", partes.fragment))
+        kwargs["connect_args"] = {"ssl_context": ssl.create_default_context()}
+    return create_engine(url, **kwargs)
 
 
 def init_schema() -> None:
