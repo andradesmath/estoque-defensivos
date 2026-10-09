@@ -71,7 +71,7 @@ try:
 except ImportError:
     pass
 
-from pywinauto import Application, Desktop  # noqa: E402
+from pywinauto import Application, Desktop, mouse  # noqa: E402
 from pywinauto.findwindows import ElementNotFoundError  # noqa: E402
 from pywinauto.timings import TimeoutError as PywinautoTimeoutError  # noqa: E402
 
@@ -207,13 +207,28 @@ def _definir_empresa(campo, texto: str, metodo: str = "clique") -> None:
         subir = (len(_EMPRESAS_ORDEM) - 1) - indice
         campo.type_keys(("{UP " + str(subir) + "}" if subir > 0 else "") + "{TAB}")
     else:
-        # CLIQUE na linha certa, por posicao. Validado ao vivo em 09/10/2026: popup em
-        # (L547,T388,R725,B455) - 67px, 5 itens, ~13.4px por linha - clicar no centro
-        # da 3a linha selecionou PORTEIRA AGROCOMERCIAL.
+        # CLIQUE na linha certa - mas MOVENDO o mouse ate ela antes, como um humano.
+        #
+        # Diagnostico de 09/10/2026 (scripts/debug_empresa_sgi.py): com
+        # popup.click_input() o clique CHEGA (o popup fecha, visivel=False depois),
+        # mas a empresa continua a mesma. Ou seja, a lista confirma a linha que esta
+        # DESTACADA, nao a que esta sob o cursor - e o destaque desse TPopupDataList
+        # acompanha o movimento do mouse (hover), que o click_input nao gera: ele
+        # posiciona e clica no mesmo instante. Por isso a selecao caia sempre no
+        # padrao (CASA DE ADUBO), enquanto o mesmo clique feito a mao funcionava (ali
+        # o mouse se movia de verdade antes).
+        #
+        # Entao: move ate a linha (em dois passos, pra garantir WM_MOUSEMOVE dentro do
+        # popup), espera o destaque acompanhar, e so entao clica.
         prect = popup.rectangle()
         altura_linha = prect.height() / len(_EMPRESAS_ORDEM)
-        y = int((indice + 0.5) * altura_linha)
-        popup.click_input(coords=(prect.width() // 2, y))
+        x_abs = prect.left + prect.width() // 2
+        y_abs = prect.top + int((indice + 0.5) * altura_linha)
+        mouse.move(coords=(x_abs, prect.top + int(altura_linha // 2)))
+        time.sleep(0.2)
+        mouse.move(coords=(x_abs, y_abs))
+        time.sleep(0.4)  # deixa o destaque pousar na linha certa
+        mouse.click(button="left", coords=(x_abs, y_abs))
     time.sleep(0.4)
 
     # Fecha o popup se ele tiver ficado aberto (senao o Confirmar nao e clicavel).
