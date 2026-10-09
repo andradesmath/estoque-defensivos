@@ -408,6 +408,19 @@ def conectar_relatorio():
     return app, rep
 
 
+_DTM_SETSYSTEMTIME = 0x1002  # DTM_FIRST + 2
+_GDT_VALID = 1
+
+
+class _SYSTEMTIME(ctypes.Structure):
+    _fields_ = [
+        ("wYear", ctypes.c_ushort), ("wMonth", ctypes.c_ushort),
+        ("wDayOfWeek", ctypes.c_ushort), ("wDay", ctypes.c_ushort),
+        ("wHour", ctypes.c_ushort), ("wMinute", ctypes.c_ushort),
+        ("wSecond", ctypes.c_ushort), ("wMilliseconds", ctypes.c_ushort),
+    ]
+
+
 def _campos_data(rep):
     dtps = rep.children(class_name="TDateTimePicker")
     if len(dtps) != 2:
@@ -417,51 +430,74 @@ def _campos_data(rep):
     return dtps[0], dtps[1]  # esquerda = Data Inicial, direita = Data Final
 
 
+def _definir_data_nativo(campo, dia: date) -> bool:
+    """Define a data pela API nativa do controle (DTM_SETSYSTEMTIME), sem teclado
+    nenhum. E o jeito determinstico: navegar entre os segmentos por teclado se mostrou
+    INDETERMINADO nesse TDateTimePicker - nem {HOME} nem {LEFT} levam de forma
+    confiavel ao primeiro segmento (ambos deixam o cursor em lugar imprevisivel, e o
+    {RIGHT} cicla), o que fazia os digitos entrarem em segmentos trocados de um jeito
+    que variava a cada dia (09/10/2026 -> 26/09/2010 com {HOME}; 22/09/2026 ->
+    09/02/2022 com {LEFT}).
+
+    A mensagem leva um ponteiro pra uma struct SYSTEMTIME, e ponteiro do nosso
+    processo nao vale no processo do SGI - por isso a struct e escrita na memoria do
+    PROPRIO processo alvo (RemoteMemoryBlock do pywinauto) antes de enviar.
+
+    Devolve True se a data pegou (confere lendo de volta), False se nao deu - quem
+    chama cai pro caminho por clique+digitacao."""
+    try:
+        from pywinauto.remote_memory_block import RemoteMemoryBlock
+
+        st = _SYSTEMTIME()
+        st.wYear = dia.year
+        st.wMonth = dia.month
+        st.wDay = dia.day
+        st.wDayOfWeek = (dia.weekday() + 1) % 7  # SYSTEMTIME: 0=domingo
+        rmb = RemoteMemoryBlock(campo)
+        rmb.Write(st)
+        campo.send_message(_DTM_SETSYSTEMTIME, _GDT_VALID, rmb.Address())
+        del rmb
+    except Exception:  # noqa: BLE001 - qualquer falha aqui so significa "usa o plano B"
+        return False
+    time.sleep(0.2)
+    return dia.strftime("%d/%m/%Y") in (campo.window_text() or "")
+
+
 def _definir_data(campo, dia: date, tentativas: int = 3) -> None:
-    """Foca o campo, vai pro PRIMEIRO segmento e digita dia/mes/ano, avançando de
-    segmento com {RIGHT} explícito em vez de confiar no auto-avanço a cada 2 dígitos
-    (que já comeu/trocou dígitos antes).
+    """Coloca `dia` no campo de data, conferindo lendo de volta (window_text() desse
+    controle funciona, diferente do combo de empresa).
 
-    O {LEFT} repetido (em vez de {HOME}) é o que garante começar no segmento do DIA:
-    {HOME} NAO posiciona o cursor nesse TDateTimePicker - ele fica onde estava da
-    ultima vez. Isso causava um deslocamento de um segmento, com assinatura
-    inconfundivel nos testes de 09/10/2026:
-        pedido 09/10/2026 -> saiu 26/09/2010   (dia<-ano, mes<-dia, ano<-mes)
-        pedido 23/09/2026 -> saiu 26/03/2009
-    ou seja, os digitos entravam a partir do MES e o {RIGHT} ciclava mes->ano->dia.
-    Os dias que funcionavam eram os que herdavam o cursor no lugar certo do dia
-    anterior - por isso falhava de forma intermitente e "aleatoria". {LEFT} para no
-    primeiro segmento, entao repetir 4x deixa o cursor no dia venha de onde vier.
-
-    Confere lendo de volta - a unica forma de saber se realmente pegou, sem alguem
-    olhando a tela."""
+    Caminho principal: API nativa (ver _definir_data_nativo). Plano B: posicionar o
+    cursor por CLIQUE no segmento do dia - coordenada absoluta dentro do campo, que
+    nao depende de onde o cursor estava (o que afundou as versoes por teclado) - e
+    digitar dia/mes/ano avancando com {RIGHT}."""
     esperado = dia.strftime("%d/%m/%Y")
-    texto = ""
+    if _definir_data_nativo(campo, dia):
+        return
+
+    rect = campo.rectangle()
+    meio_y = rect.height() // 2
+    texto = campo.window_text()
     for tentativa in range(1, tentativas + 1):
         campo.set_focus()
-        campo.type_keys("{LEFT 4}")
-        if tentativa == 2:
-            # Estrategia alternativa: digita os 8 digitos corridos, deixando o proprio
-            # campo avancar de segmento. Repetir a MESMA estrategia 3x nao adianta
-            # (03/10/2026 saiu '03/10/2010' nas 3 tentativas iguais) - variar o jeito
-            # de digitar e o que de fato muda o resultado.
-            campo.type_keys(f"{dia:%d%m%Y}")
-        else:
-            # Tentativas 1 e 3: segmento a segmento com {RIGHT} explicito (nao confia no
-            # auto-avanco, que ja trocou digitos antes). Na 3a, com pausa entre segmentos.
-            pausa = 0.15 if tentativa == 3 else 0.0
-            campo.type_keys(f"{dia:%d}")
-            time.sleep(pausa)
-            campo.type_keys("{RIGHT}")
-            campo.type_keys(f"{dia:%m}")
-            time.sleep(pausa)
-            campo.type_keys("{RIGHT}")
-            campo.type_keys(f"{dia:%Y}")
+        # Clica no inicio do campo = segmento do DIA (formato dd/mm/aaaa). Posicao
+        # absoluta: 8px da borda esquerda na 1a/3a tentativa, 12px na 2a (caso a
+        # margem do controle engula o primeiro clique).
+        campo.click_input(coords=(12 if tentativa == 2 else 8, meio_y))
+        time.sleep(0.1)
+        campo.type_keys(f"{dia:%d}")
+        campo.type_keys("{RIGHT}")
+        campo.type_keys(f"{dia:%m}")
+        campo.type_keys("{RIGHT}")
+        campo.type_keys(f"{dia:%Y}")
         time.sleep(0.3)
         texto = campo.window_text()
         if esperado in texto:
             return
-    raise RoboIndisponivel(f"Campo de data ficou {texto!r} depois de {tentativas} tentativa(s), esperado {esperado}.")
+    raise RoboIndisponivel(
+        f"Campo de data ficou {texto!r} depois de {tentativas} tentativa(s) "
+        f"(e da API nativa), esperado {esperado}."
+    )
 
 
 def _exportar_xls(app, rep, dia: date) -> Path:
