@@ -477,8 +477,10 @@ def substituir_movimentacao_entrada_dia(
             r = conn.execute(text("DELETE FROM movimentacao_entrada_compra WHERE loja = :l AND data = :d"),
                              {"l": loja, "d": dia})
         removidos = r.rowcount
-        qtd_total = sum((l["quantidade_entrada"] for l in linhas), Decimal(0))
-        valor_total = sum((l["valor_entrada"] for l in linhas), Decimal(0))
+        # para_decimal (não Decimal() direto): linhas vem de parser_compras_sgi, que
+        # devolve float (via xlrd) - Decimal(0) + float dá TypeError.
+        qtd_total = sum((para_decimal(l["quantidade_entrada"]) for l in linhas), Decimal(0))
+        valor_total = sum((para_decimal(l["valor_entrada"]) for l in linhas), Decimal(0))
         conn.execute(text("""
             INSERT INTO sync_dias_compras (loja, data, n_produtos, qtd_total, valor_total)
             VALUES (:l, :d, :n, :q, :v)
