@@ -39,6 +39,7 @@ Uso (sempre em D:\\SGI, com o SGI aberto e logado e a janela do relatorio aberta
 from __future__ import annotations
 
 import argparse
+import ctypes
 import os
 import sys
 import time
@@ -89,20 +90,42 @@ def _conectar_app():
     return Application(backend="win32").connect(title_re=TITULO_PRINCIPAL + ".*", timeout=5)
 
 
+_CB_GETCOUNT = 0x0146
+_CB_GETLBTEXT = 0x0148
+_CB_GETLBTEXTLEN = 0x0149
+_CB_SETCURSEL = 0x014E
+
+
 def _definir_empresa(campo, texto: str) -> None:
-    """O combo Empresa pode ser DROPDOWN (aceita digitar) ou DROPDOWNLIST (so selecao) -
-    tenta .select() (selecao por texto exato, o jeito robusto) primeiro; se o combo nao
-    suportar isso (ComboBoxWrapper nao bate com a classe real do controle), cai pra
-    digitar o texto direto. Confere lendo de volta - mesma logica de _definir_data."""
-    try:
-        campo.select(texto)
-    except Exception:
-        campo.set_focus()
-        campo.type_keys("^a{DELETE}")
-        campo.type_keys(texto, with_spaces=True)
+    """Testado ao vivo em 09/10/2026: .select() do pywinauto (ComboBoxWrapper) nao
+    funciona nesse combo (classe do controle nao e reconhecida como ComboBox padrao) e
+    digitar texto nao cola (e DROPDOWNLIST - sem parte editavel, nao aceita WM_CHAR).
+    Em vez de adivinhar por teclado/mouse, fala direto com o controle via mensagens
+    nativas de combobox do Windows (CB_GETLBTEXT/CB_SETCURSEL) no handle (`hwnd`) -
+    funcionam em qualquer ComboBox real do Win32, seja qual for o nome de classe que o
+    framework (Delphi/VCL) deu a ele. Lista os itens pra achar o indice exato (comparacao
+    sem distinguir maiusculas/espaco nas pontas) e seleciona por indice."""
+    hwnd = campo.handle
+    user32 = ctypes.windll.user32
+    n = user32.SendMessageW(hwnd, _CB_GETCOUNT, 0, 0)
+    alvo = texto.strip().upper()
+    indice = None
+    itens = []
+    for i in range(n):
+        tam = user32.SendMessageW(hwnd, _CB_GETLBTEXTLEN, i, 0)
+        buf = ctypes.create_unicode_buffer(tam + 1)
+        user32.SendMessageW(hwnd, _CB_GETLBTEXT, i, buf)
+        itens.append(buf.value)
+        if buf.value.strip().upper() == alvo:
+            indice = i
+    if indice is None:
+        raise RoboIndisponivel(f"Empresa {texto!r} nao esta na lista do combo (itens vistos: {itens}).")
+    user32.SendMessageW(hwnd, _CB_SETCURSEL, indice, 0)
     atual = campo.window_text()
     if texto not in atual:
-        raise RoboIndisponivel(f"Campo Empresa ficou {atual!r} depois de tentar definir {texto!r}.")
+        raise RoboIndisponivel(
+            f"Campo Empresa ficou {atual!r} depois de selecionar {texto!r} (indice {indice})."
+        )
 
 
 def _logar_sgi() -> None:
