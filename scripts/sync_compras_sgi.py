@@ -418,17 +418,28 @@ def _campos_data(rep):
 
 
 def _definir_data(campo, dia: date, tentativas: int = 3) -> None:
-    """Foca o campo e digita dia/mes/ano, avançando de segmento com {RIGHT} explícito
-    em vez de confiar no auto-avanço do TDateTimePicker a cada 2 dígitos: isso se
-    mostrou pouco confiável (pedido 02/10/2026 saiu 26/10/2026 de forma repetível,
-    inclusive com pausa maior entre teclas - não era timing, o auto-avanço comeu/
-    trocou o segmento do dia). Confere lendo de volta - a unica forma de saber se
-    realmente pegou, sem alguem olhando a tela."""
+    """Foca o campo, vai pro PRIMEIRO segmento e digita dia/mes/ano, avançando de
+    segmento com {RIGHT} explícito em vez de confiar no auto-avanço a cada 2 dígitos
+    (que já comeu/trocou dígitos antes).
+
+    O {LEFT} repetido (em vez de {HOME}) é o que garante começar no segmento do DIA:
+    {HOME} NAO posiciona o cursor nesse TDateTimePicker - ele fica onde estava da
+    ultima vez. Isso causava um deslocamento de um segmento, com assinatura
+    inconfundivel nos testes de 09/10/2026:
+        pedido 09/10/2026 -> saiu 26/09/2010   (dia<-ano, mes<-dia, ano<-mes)
+        pedido 23/09/2026 -> saiu 26/03/2009
+    ou seja, os digitos entravam a partir do MES e o {RIGHT} ciclava mes->ano->dia.
+    Os dias que funcionavam eram os que herdavam o cursor no lugar certo do dia
+    anterior - por isso falhava de forma intermitente e "aleatoria". {LEFT} para no
+    primeiro segmento, entao repetir 4x deixa o cursor no dia venha de onde vier.
+
+    Confere lendo de volta - a unica forma de saber se realmente pegou, sem alguem
+    olhando a tela."""
     esperado = dia.strftime("%d/%m/%Y")
     texto = ""
     for tentativa in range(1, tentativas + 1):
         campo.set_focus()
-        campo.type_keys("{HOME}")
+        campo.type_keys("{LEFT 4}")
         if tentativa == 2:
             # Estrategia alternativa: digita os 8 digitos corridos, deixando o proprio
             # campo avancar de segmento. Repetir a MESMA estrategia 3x nao adianta
