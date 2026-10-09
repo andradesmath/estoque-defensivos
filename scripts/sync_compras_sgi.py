@@ -11,7 +11,8 @@ dirigir a UI do proprio SGI.exe nesta maquina.
 Se o SGI ja estiver aberto, logado, com a janela "Relacao de Custo de Compras" aberta
 (pode estar minimizada), o robo so reaproveita tudo isso - e o caminho mais robusto
 (nao depende de login nem de navegar menu). SE NAO ESTIVER: o robo abre o SGI.exe
-sozinho (SGI_LOGIN/SGI_SENHA do .env), espera logar, e abre o relatorio pelo menu
+sozinho (SGI_LOGIN/SGI_SENHA_DESKTOP do .env - senha diferente da do SGI_SENHA usado
+pelo portal web), espera logar, e abre o relatorio pelo menu
 Relatorios > Compras > Relacao de Custo de Compras (confirmado manualmente em
 09/10/2026 - e esse o caminho certo). Isso cobre o caso de rodar com --dia logo que
 o Windows liga (Agendador de Tarefas, gatilho "ao fazer logon"), sem voce precisar
@@ -196,13 +197,18 @@ def _definir_empresa(campo, texto: str) -> None:
 
 
 def _logar_sgi() -> None:
-    """Abre o SGI.exe e faz login sozinho (SGI_LOGIN/SGI_SENHA do .env). So roda quando
-    o SGI nao estava aberto - NUNCA mata/reinicia uma sessao ja logada."""
+    """Abre o SGI.exe e faz login sozinho (SGI_LOGIN + SGI_SENHA_DESKTOP do .env). So
+    roda quando o SGI nao estava aberto - NUNCA mata/reinicia uma sessao ja logada.
+
+    SGI_SENHA_DESKTOP (nao SGI_SENHA): a senha do app desktop e DIFERENTE da senha do
+    portal web (confirmado pelo usuario em 09/10/2026) - SGI_SENHA e usada por
+    scripts/sync_sgi.py (robo de vendas via portal web, GitHub Actions) e nao deve ser
+    sobrescrita por essa senha diferente."""
     usuario = os.environ.get("SGI_LOGIN")
-    senha = os.environ.get("SGI_SENHA")
+    senha = os.environ.get("SGI_SENHA_DESKTOP")
     if not usuario or not senha:
         raise RoboIndisponivel(
-            "SGI nao esta aberto e SGI_LOGIN/SGI_SENHA nao estao no .env - "
+            "SGI nao esta aberto e SGI_LOGIN/SGI_SENHA_DESKTOP nao estao no .env - "
             "nao da pra logar sozinho. Abra e logue manualmente."
         )
     if not SGI_ATALHO.exists():
