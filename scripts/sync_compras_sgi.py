@@ -232,6 +232,19 @@ def conectar_relatorio():
     main = app.window(title_re=TITULO_PRINCIPAL + ".*")
     rep = main.child_window(title=TITULO_RELATORIO, class_name=CLASSE_RELATORIO)
     if not rep.exists():
+        # Logo apos o login, o SGI mostra um splash "Conectado! Carregando inventarios"
+        # que deixa o menu principal desabilitado ate terminar - sem esperar isso,
+        # menu_select da ElementNotEnabled (visto ao vivo em 09/10/2026). Checagem
+        # barata (is_enabled() so le o estado da janela) - nao atrapalha o caminho em
+        # que o SGI ja estava pronto havia tempo.
+        fim = time.time() + 60.0
+        while not main.is_enabled():
+            if time.time() > fim:
+                raise RoboIndisponivel(
+                    "SGI nao ficou pronto (menu habilitado) em 60s depois do login - "
+                    "pode estar travado carregando inventarios."
+                )
+            time.sleep(1.0)
         main.menu_select("Relatórios->Compras->Relação de Custo de Compras")
         rep = main.child_window(title=TITULO_RELATORIO, class_name=CLASSE_RELATORIO)
         try:
