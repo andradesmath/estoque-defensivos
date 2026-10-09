@@ -99,19 +99,21 @@ def _campos_data(rep):
 
 
 def _definir_data(campo, dia: date, tentativas: int = 3) -> None:
-    """Foca o campo e digita DDMMAAAA (o TDateTimePicker avanca de segmento sozinho a
-    cada 2 digitos, igual digitar num celular). Confere lendo de volta - e a unica forma
-    de saber se realmente pegou, sem alguem olhando a tela.
-
-    `pause` entre teclas: na primeira tentativa (sem pausa) o controle perdeu/trocou
-    dígitos (ex.: pediu 02/10/2026 e ficou 26/10/2026) - sinal de que ele nao acompanha
-    um type_keys "rápido demais" tecla-a-tecla. Tenta de novo mais devagar antes de
-    desistir, em vez de já gravar uma data errada."""
+    """Foca o campo e digita dia/mes/ano, avançando de segmento com {RIGHT} explícito
+    em vez de confiar no auto-avanço do TDateTimePicker a cada 2 dígitos: isso se
+    mostrou pouco confiável (pedido 02/10/2026 saiu 26/10/2026 de forma repetível,
+    inclusive com pausa maior entre teclas - não era timing, o auto-avanço comeu/
+    trocou o segmento do dia). Confere lendo de volta - a unica forma de saber se
+    realmente pegou, sem alguem olhando a tela."""
     esperado = dia.strftime("%d/%m/%Y")
     for tentativa in range(1, tentativas + 1):
         campo.set_focus()
         campo.type_keys("{HOME}")
-        campo.type_keys(f"{dia:%d}{dia:%m}{dia:%Y}", pause=0.1 * tentativa)
+        campo.type_keys(f"{dia:%d}")
+        campo.type_keys("{RIGHT}")
+        campo.type_keys(f"{dia:%m}")
+        campo.type_keys("{RIGHT}")
+        campo.type_keys(f"{dia:%Y}")
         time.sleep(0.3)
         texto = campo.window_text()
         if esperado in texto:
