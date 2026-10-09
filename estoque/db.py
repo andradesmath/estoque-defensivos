@@ -114,6 +114,61 @@ def init_schema() -> None:
         raw.close()
 
 
+def _comandos_do_schema(contendo: str) -> list[str]:
+    """Comandos do schema.sql que citam `contendo`, um a um.
+
+    Existe porque init_schema() manda o arquivo INTEIRO numa tacada só, o que o
+    psycopg2 aceita e o pg8000 não (o robô local usa pg8000 - ver
+    requirements-local-robo-compras.txt). Separar por ';' basta aqui porque o schema
+    não tem função/trigger com ';' dentro de corpo citado."""
+    script = SCHEMA_PATH.read_text(encoding="utf-8")
+    comandos = []
+    for bruto in script.split(";"):
+        # Tira comentários de linha antes de decidir: um "--" que cite a tabela não
+        # torna o comando relevante.
+        corpo = "\n".join(l for l in bruto.splitlines() if not l.strip().startswith("--")).strip()
+        if corpo and contendo in corpo:
+            comandos.append(corpo + ";")
+    return comandos
+
+
+def garantir_schema_transferencias() -> list[str]:
+    """Cria o que o robô de transferências precisa, se ainda não existir: a tabela
+    movimentacao_transferencia, seu índice, e a versão de v_saldo_produto que desconta
+    as transferências do saldo.
+
+    POR QUE existe: o schema.sql é a fonte da verdade, mas ninguém roda migração neste
+    projeto - as tabelas de produção nasceram do painel chamando init_schema(). A
+    tabela nova só apareceria lá quando o painel subisse com o código novo, e até lá o
+    robô quebrava com 'relation "movimentacao_transferencia" does not exist' DEPOIS de
+    ter feito todo o trabalho de exportar (aconteceu em 09/10/2026). Rodar os comandos
+    aqui, antes de gravar, resolve de um jeito idempotente: todos são
+    IF NOT EXISTS / OR REPLACE.
+
+    Devolve a lista de comandos executados (para o robô dizer o que fez)."""
+    comandos = _comandos_do_schema("movimentacao_transferencia")
+    if not comandos:
+        raise RuntimeError("Não achei no schema.sql os comandos de movimentacao_transferencia.")
+    for cmd in comandos:
+        # Uma transação por comando: no Postgres, erro aborta a transação inteira - se
+        # a view falhasse junto com a tabela, a tabela recém-criada também seria
+        # desfeita.
+        try:
+            with get_engine().begin() as conn:
+                conn.execute(text(cmd))
+        except Exception:  # noqa: BLE001
+            # CREATE OR REPLACE VIEW só aceita acrescentar colunas NO FIM. Se a view em
+            # produção tiver nascido com outra ordem/nome de colunas, ele recusa. Como
+            # nada depende de v_saldo_produto (conferido no schema.sql), recriar do
+            # zero é seguro - e é a única saída sem editar o banco na mão.
+            if "CREATE OR REPLACE VIEW v_saldo_produto" not in cmd:
+                raise
+            with get_engine().begin() as conn:
+                conn.execute(text("DROP VIEW IF EXISTS v_saldo_produto"))
+                conn.execute(text(cmd))
+    return [c.split("\n", 1)[0].strip() for c in comandos]
+
+
 def _df(sql: str, **params) -> pd.DataFrame:
     with get_engine().connect() as conn:
         df = pd.read_sql_query(text(sql), conn, params=params)
@@ -556,6 +611,21 @@ def listar_transferencias(ini: date | None = None, fim: date | None = None,
                           quantidade_transferida, valor_transferido
                    FROM movimentacao_transferencia WHERE {' AND '.join(cond)}
                    ORDER BY data DESC, cod_produto""", **params)
+
+
+def ultima_data_transferencia(destino: str) -> date | None:
+    """Data da transferência mais recente já gravada para esse destino, ou None.
+
+    É o que dispensa uma tabela de controle para o robô de transferências (as compras
+    têm sync_dias_compras). Ele regrava por PERÍODO, então basta começar na última data
+    conhecida e ir até hoje: tudo que veio depois dela entra, inclusive os dias em que o
+    notebook ficou desligado. Dias sem transferência nenhuma não movem esta data - e
+    isso é inofensivo, porque regravar um dia vazio é um no-op (apaga nada, insere
+    nada)."""
+    with get_engine().begin() as conn:
+        r = conn.execute(text("""SELECT MAX(data) FROM movimentacao_transferencia
+                                 WHERE destino = :dest"""), {"dest": destino}).scalar()
+    return r
 
 
 def possiveis_duplicatas_transferencia(dia: date, codigos: list[str]) -> list[dict]:

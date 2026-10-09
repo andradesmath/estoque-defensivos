@@ -25,10 +25,14 @@ um ajuste negativo no mesmo dia/produto.
 Requisitos: Python 32-bit (mesma arquitetura do SGI.exe) —
     py -3.11-32 -m pip install -r requirements-local-robo-compras.txt
 
+Sem --desde, o robô começa na última transferência já gravada (menos a janela de dias
+recentes) e vai até hoje - então os dias em que o notebook ficou desligado entram na
+próxima execução sozinhos, sem precisar de tabela de controle (ver _inicio_automatico).
+
 Uso:
     py -3.11-32 scripts\\sync_transferencias_sgi.py --dry-run           # mostra, não grava
     py -3.11-32 scripts\\sync_transferencias_sgi.py                     # grava
-    py -3.11-32 scripts\\sync_transferencias_sgi.py --desde 22/09/2026  # outro início
+    py -3.11-32 scripts\\sync_transferencias_sgi.py --desde 22/09/2026  # força o início
 """
 from __future__ import annotations
 
@@ -36,7 +40,7 @@ import argparse
 import os
 import sys
 import time
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 RAIZ_PROJETO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -74,6 +78,29 @@ def _combo_destino(rep):
         )
     combos.sort(key=lambda w: w.rectangle().top)  # o de destino é o de cima
     return combos[0]
+
+
+def _inicio_automatico(janela: int) -> date:
+    """De quando começar quando ninguém passou --desde (caso do agendamento diário).
+
+    Volta `janela` dias antes da última transferência já gravada. Como a gravação é por
+    período (apaga o intervalo e regrava), isso cobre sozinho os dias em que o notebook
+    ficou desligado - não existe "dia perdido" para recuperar depois. A janela extra
+    rebusca os dias recentes, para pegar lançamento que o SGI recebeu com atraso ou que
+    foi estornado.
+
+    Sem nada gravado ainda (primeira execução), começa em DATA_INICIAL_PADRAO - a data
+    em que o controle de estoque começou; antes dela não há saldo com que comparar."""
+    padrao = datetime.strptime(DATA_INICIAL_PADRAO, "%d/%m/%Y").date()
+    try:
+        from estoque import db
+        ultima = db.ultima_data_transferencia(DESTINO)
+    except Exception as e:  # noqa: BLE001 - sem banco, o padrão ainda dá um período válido
+        print(f"  (não deu pra consultar o banco pra saber de quando começar: {e})")
+        return padrao
+    if ultima is None:
+        return padrao
+    return max(padrao, ultima - timedelta(days=janela))
 
 
 def exportar_periodo(app, rep, inicio: date, fim: date) -> Path:
@@ -131,12 +158,16 @@ def _avisar_duplicatas(por_dia: dict) -> None:
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(
         description="Sincroniza TRANSFERÊNCIAS DE SAÍDA (Porteira -> Piatã) do SGI desktop.")
-    ap.add_argument("--desde", help=f"Data inicial, DD/MM/AAAA (padrão: {DATA_INICIAL_PADRAO}).")
+    ap.add_argument("--desde", help="Data inicial, DD/MM/AAAA (padrão: da última "
+                                    "transferência gravada menos --janela).")
     ap.add_argument("--ate", help="Data final, DD/MM/AAAA (padrão: hoje).")
+    ap.add_argument("--janela", type=int, help="Dias recentes sempre rebuscados (padrão: 3).")
     ap.add_argument("--dry-run", action="store_true", help="Mostra o que entraria, sem gravar.")
     args = ap.parse_args(argv)
 
-    inicio = datetime.strptime(args.desde or DATA_INICIAL_PADRAO, "%d/%m/%Y").date()
+    janela = args.janela if args.janela is not None else int(os.environ.get("SYNC_JANELA_DIAS", "3"))
+    inicio = (datetime.strptime(args.desde, "%d/%m/%Y").date() if args.desde
+              else _inicio_automatico(janela))
     fim = datetime.strptime(args.ate, "%d/%m/%Y").date() if args.ate else hoje_brasil()
     if inicio > fim:
         print(f"ERRO: início ({inicio:%d/%m/%Y}) é depois do fim ({fim:%d/%m/%Y}).")
@@ -183,6 +214,17 @@ def main(argv=None) -> int:
         return 0
 
     from estoque import db
+    # Garante tabela + view antes de gravar. Sem isto, a primeira execução real morria
+    # com 'relation "movimentacao_transferencia" does not exist' DEPOIS de exportar e
+    # processar tudo (09/10/2026): o schema.sql tinha a tabela, o banco de produção não
+    # - ninguém roda migração aqui, as tabelas nascem quando o código novo sobe.
+    try:
+        feitos = db.garantir_schema_transferencias()
+        print(f"  [banco] schema conferido ({len(feitos)} comando(s) idempotente(s))")
+    except Exception as e:  # noqa: BLE001
+        print(f"ERRO: não consegui garantir a tabela/view de transferências: {e}")
+        return 1
+
     out = db.substituir_transferencias_periodo(DESTINO, inicio, fim, por_dia)
     print(f"\nGravado: {out['gravados']} linha(s) em {out['dias']} dia(s) "
           f"(o período foi regravado; {out['removidos']} linha(s) antigas substituídas).")

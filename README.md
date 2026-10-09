@@ -119,7 +119,7 @@ ative o cron. Em falha, o workflow sobe screenshot/HTML/PDF como artefato (7 dia
 Flags: `--loja`, `--data DD/MM/AAAA`, `--desde`, `--janela N`, `--forcar-tudo`,
 `--permitir-zerar`, `--dry-run`, `--headed`.
 
-### 6. Robô de COMPRAS (SGI desktop) e o agendamento ao ligar o notebook
+### 6. Robô de COMPRAS (SGI desktop)
 
 As **entradas por compra** só existem no SGI **desktop** (não no portal web), e o banco do SGI
 não aceita conexão direta — então a única automação possível é dirigir a interface do próprio
@@ -151,18 +151,46 @@ inteiros logada na empresa errada (vinha tudo vazio).
 produto monitorado já tiver ajuste de entrada lançado à mão no mesmo dia, o robô imprime
 `!! ATENCAO` com o número do ajuste — confira antes de gravar.
 
+### 7. Robô de TRANSFERÊNCIAS (Porteira → Piatã)
+
+`scripts/sync_transferencias_sgi.py` dirige a mesma janela do SGI, em
+*Relatórios > Relação de Transferências*, escolhe o destino **PORTEIRA PIATA**, preenche o
+período e exporta o `.csv` (único formato que essa tela gera). Grava em
+`movimentacao_transferencia`, que **diminui** o saldo.
+
+Diferença em relação a Compras: essa tela aceita um **período** e o arquivo traz a data em
+cada linha, então **uma exportação só** cobre o intervalo inteiro — não há ciclo dia a dia. A
+gravação apaga o período e regrava, de modo que uma transferência estornada no SGI também
+desaparece do nosso lado.
+
+```bash
+py -3.11-32 scripts\sync_transferencias_sgi.py --dry-run    # mostra o que entraria
+py -3.11-32 scripts\sync_transferencias_sgi.py              # grava
+```
+
+Sem `--desde`, começa na última transferência já gravada (menos `--janela`, padrão 3 dias) e
+vai até hoje — por isso esse robô não precisa de tabela de controle.
+
+**Contagem em dobro, aqui, é o caso esperado no começo**: essas saídas eram lançadas à mão
+como ajuste no painel. O robô imprime `!! ATENCAO` quando acha ajuste negativo no mesmo
+dia/produto; **exclua esses ajustes no painel antes de gravar**, senão o estoque é descontado
+duas vezes.
+
 #### Agendamento (gatilho "ao fazer logon")
 
-`scripts/sync_compras_sgi_logon.bat` é o que a tarefa chama: fixa a pasta do projeto e guarda
-a saída em `logs/compras_AAAA-MM-DD.log`. Não leva data: o robô consulta `sync_dias_compras`
-e busca sozinho os dias que faltam — **os dias em que o notebook ficou desligado entram no
-próximo logon**.
+`scripts/sync_sgi_logon.bat` é o que a tarefa chama: fixa a pasta do projeto, roda **os dois
+robôs em sequência** (compras, depois transferências) e guarda a saída em
+`logs/sgi_AAAA-MM-DD.log`. Em sequência de propósito — os dois dirigem a mesma janela do SGI
+por cliques reais, então em paralelo roubariam o foco um do outro.
+
+Não leva data: compras consulta `sync_dias_compras` e transferências olha a última data
+gravada — **os dias em que o notebook ficou desligado entram no próximo logon**.
 
 Criar a tarefa (PowerShell **como administrador**, uma vez só):
 
 ```powershell
-schtasks /create /tn "Estoque - Compras SGI (logon)" ^
-  /tr "C:\Users\Admin\Documents\estoque-defensivos\estoque-defensivos\scripts\sync_compras_sgi_logon.bat" ^
+schtasks /create /tn "Estoque - SGI (logon)" ^
+  /tr "C:\Users\Admin\Documents\estoque-defensivos\estoque-defensivos\scripts\sync_sgi_logon.bat" ^
   /sc onlogon /delay 0002:00 /rl highest /f
 ```
 
@@ -170,13 +198,13 @@ schtasks /create /tn "Estoque - Compras SGI (logon)" ^
 rodar na hora ou remover:
 
 ```powershell
-schtasks /query /tn "Estoque - Compras SGI (logon)" /v /fo list
-schtasks /run   /tn "Estoque - Compras SGI (logon)"
-schtasks /delete /tn "Estoque - Compras SGI (logon)" /f
+schtasks /query /tn "Estoque - SGI (logon)" /v /fo list
+schtasks /run   /tn "Estoque - SGI (logon)"
+schtasks /delete /tn "Estoque - SGI (logon)" /f
 ```
 
-A tarefa dispara em **todo** logon; como o robô só busca o que falta, nos logons seguintes do
-mesmo dia ele não tem o que fazer e sai rápido.
+A tarefa dispara em **todo** logon; como os robôs só buscam o que falta, nos logons seguintes
+do mesmo dia não têm o que fazer e saem rápido.
 
 ## Testes
 

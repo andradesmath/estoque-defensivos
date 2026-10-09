@@ -199,3 +199,21 @@ def test_mapa_fornecedor_produto(base):
     assert base.buscar_mapa_fornecedor(cnpj) == {"0139857": "00002"}
     # CNPJ diferente não enxerga o mapa de outro fornecedor
     assert base.buscar_mapa_fornecedor("99.999.999/0001-99") == {}
+
+
+def test_comandos_do_schema_separa_so_o_que_importa():
+    """garantir_schema_transferencias() depende deste recorte: o robô local usa pg8000,
+    que não aceita o schema.sql inteiro numa tacada (psycopg2 aceita). Se o recorte
+    pegar comando a mais, a execução do robô mexe em tabela que não é dela; a menos, a
+    gravação quebra com 'relation does not exist' depois de todo o trabalho feito."""
+    from estoque.db import _comandos_do_schema
+
+    cmds = _comandos_do_schema("movimentacao_transferencia")
+    assert len(cmds) == 3
+    assert cmds[0].startswith("CREATE TABLE IF NOT EXISTS movimentacao_transferencia")
+    assert cmds[1].startswith("CREATE INDEX IF NOT EXISTS ix_mov_transferencia_data")
+    # A view precisa vir DEPOIS da tabela que ela consulta.
+    assert cmds[2].startswith("CREATE OR REPLACE VIEW v_saldo_produto")
+    assert all(c.rstrip().endswith(";") for c in cmds)
+    # Nenhum comando pode ser só comentário solto.
+    assert not any(c.lstrip().startswith("--") for c in cmds)
