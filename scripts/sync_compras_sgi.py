@@ -279,7 +279,19 @@ def _logar_sgi() -> None:
     campo_empresa, _campo_modulo = combos  # esquerda = Empresa, direita = Modulo
     _definir_empresa(campo_empresa, EMPRESA_LOGIN)
 
-    login.child_window(title_re="&?Confirmar", class_name="TBitBtn").click()
+    # O titulo real do botao e "Confir&mar" - o & (acelerador) fica no MEIO da palavra,
+    # nao no comeco (confirmado no print_control_identifiers() de 09/10/2026), entao
+    # title_re="&?Confirmar" nao batia. Em vez de depender de onde o & esta, compara o
+    # titulo sem & nenhum.
+    botoes = [c for c in todos if c.class_name() == "TBitBtn"]
+    confirmar = [b for b in botoes
+                 if (b.window_text() or "").replace("&", "").strip().upper() == "CONFIRMAR"]
+    if not confirmar:
+        raise RoboIndisponivel(
+            "Nao achei o botao Confirmar na tela de login "
+            f"(botoes vistos: {[b.window_text() for b in botoes]})."
+        )
+    confirmar[0].click()
     time.sleep(2.0)
 
     # Esta e a verificacao REAL de que a empresa certa foi selecionada: nao da pra ler
