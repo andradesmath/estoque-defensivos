@@ -162,6 +162,9 @@ def processar_dia(app, rep, dia: date, gravar, dry_run: bool) -> dict:
 
     if dry_run:
         print(f"  [dry-run] {dia:%d/%m/%Y}: {len(linhas)} produto(s) - nada gravado.")
+        for l in linhas:
+            print(f"    {l['cod_produto']}  {l['descricao']:<30}  qtd={l['quantidade_entrada']:g}  "
+                  f"valor=R${l['valor_entrada']:.2f}")
         return {"gravados": len(linhas), "removidos": 0}
 
     out = gravar(LOJA, dia, linhas)
