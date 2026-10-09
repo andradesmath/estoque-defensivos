@@ -8,11 +8,14 @@ so existe no SGI desktop, que fala com o banco via um canal que rejeita conexao 
 (fora do escopo deste robo - ver conversa de 07/10/2026). A unica automacao possivel e
 dirigir a UI do proprio SGI.exe nesta maquina.
 
-PRE-REQUISITO MANUAL (uma vez so): abra no SGI Relatorios > Compras > Relacao de Custo
-de Compras e DEIXE ESSA JANELA ABERTA (pode minimizar). O robo so REAPROVEITA essa janela
-- ele nao navega o menu sozinho (automatizar clique de menu e o ponto mais fragil; reabrir
-a mesma janela sempre e muito mais robusto que reconstruir o caminho de menu toda noite).
-Se a janela nao existir, o robo para com um erro claro em vez de adivinhar.
+Se o SGI ja estiver aberto, logado, com a janela "Relacao de Custo de Compras" aberta
+(pode estar minimizada), o robo so reaproveita tudo isso - e o caminho mais robusto
+(nao depende de login nem de navegar menu). SE NAO ESTIVER: o robo abre o SGI.exe
+sozinho (SGI_LOGIN/SGI_SENHA do .env), espera logar, e abre o relatorio pelo menu
+Relatorios > Compras > Relacao de Custo de Compras (confirmado manualmente em
+09/10/2026 - e esse o caminho certo). Isso cobre o caso de rodar com --dia logo que
+o Windows liga (Agendador de Tarefas, gatilho "ao fazer logon"), sem voce precisar
+abrir nada manualmente.
 
 Mecanica por dia (Data Inicial = Data Final = o dia, como no sync de vendas - o relatorio
 e agregado no periodo, entao um relatorio por dia e o jeito de saber o dia de cada entrada):
@@ -53,6 +56,7 @@ except ImportError:
 
 from pywinauto import Application  # noqa: E402
 from pywinauto.findwindows import ElementNotFoundError  # noqa: E402
+from pywinauto.timings import TimeoutError as PywinautoTimeoutError  # noqa: E402
 
 from estoque import parser_compras_sgi, sync_core  # noqa: E402
 from estoque.util import hoje_brasil  # noqa: E402
@@ -62,6 +66,7 @@ TITULO_RELATORIO = "Relação de Custo de Compras"
 CLASSE_RELATORIO = "TF_REL_CUSTO_DE_COMPRAS"
 PASTA_EXPORT = Path(os.environ.get("SYNC_COMPRAS_PASTA", r"D:\SGI\export_compras"))
 LOJA = "Porteira"  # so Porteira compra; o saldo e compartilhado entre as lojas (ver schema.sql)
+SGI_EXE = Path(os.environ.get("SGI_EXE_PATH", r"D:\SGI\SGI.exe"))
 
 
 class RoboIndisponivel(Exception):
@@ -69,25 +74,79 @@ class RoboIndisponivel(Exception):
     vez de adivinhar (nunca tentamos login automatico nem recriar a janela do zero)."""
 
 
+def _conectar_app():
+    return Application(backend="win32").connect(title_re=TITULO_PRINCIPAL + ".*", timeout=5)
+
+
+def _logar_sgi() -> None:
+    """Abre o SGI.exe e faz login sozinho (SGI_LOGIN/SGI_SENHA do .env). So roda quando
+    o SGI nao estava aberto - NUNCA mata/reinicia uma sessao ja logada."""
+    usuario = os.environ.get("SGI_LOGIN")
+    senha = os.environ.get("SGI_SENHA")
+    if not usuario or not senha:
+        raise RoboIndisponivel(
+            "SGI nao esta aberto e SGI_LOGIN/SGI_SENHA nao estao no .env - "
+            "nao da pra logar sozinho. Abra e logue manualmente."
+        )
+    if not SGI_EXE.exists():
+        raise RoboIndisponivel(f"SGI.exe nao encontrado em {SGI_EXE} (ajuste SGI_EXE_PATH no .env).")
+
+    Application(backend="win32").start(str(SGI_EXE))
+    try:
+        app = Application(backend="win32").connect(title_re=TITULO_PRINCIPAL + ".*", timeout=40)
+    except ElementNotFoundError:
+        raise RoboIndisponivel(
+            "SGI.exe abriu mas a janela principal nao apareceu em 40s - tela de login "
+            "pode ter um layout diferente do esperado (nao testado ainda nesta versao)."
+        )
+    # Login nao testado ao vivo ainda (SGI ja estava aberto/logado quando o menu foi
+    # inspecionado em 09/10/2026) - se a tela de login tiver campos/botao diferentes
+    # disso, essa parte precisa de ajuste com o SGI fechado pra testar.
+    main = app.window(title_re=TITULO_PRINCIPAL + ".*")
+    try:
+        main.wait("ready", timeout=10)
+    except PywinautoTimeoutError:
+        pass
+    campos = main.children(class_name="Edit")
+    if len(campos) >= 2:
+        campos[0].set_edit_text(usuario)
+        campos[1].set_edit_text(senha)
+        campos[1].type_keys("{ENTER}")
+        time.sleep(2.0)
+
+
 def conectar_relatorio():
-    """Conecta na janela principal do SGI e reaproveita a janela do relatorio, que deve
-    estar aberta (ver pre-requisito manual no topo do arquivo). Devolve (app, rep):
+    """Garante SGI aberto+logado com a janela do relatorio disponivel, e devolve (app, rep).
     `app` fica pra achar outras janelas de nivel superior depois (ex.: o dialogo
     "Exportar Dados") - um wrapper ja resolvido (`rep.top_level_parent()`) nao serve
-    pra isso, so uma WindowSpecification (app.window(...)) tem .child_window()."""
+    pra isso, so uma WindowSpecification (app.window(...)) tem .child_window().
+
+    Ordem: (1) SGI ja aberto + relatorio ja aberto -> so reaproveita (caminho mais
+    robusto, sem digitar senha nem navegar menu); (2) SGI aberto mas relatorio fechado
+    -> abre pelo menu Relatorios>Compras>Relacao de Custo de Compras (confirmado
+    manualmente em 09/10/2026); (3) SGI fechado -> abre e loga sozinho (ver _logar_sgi,
+    NAO testado ao vivo ainda) e cai no caso (2)."""
     try:
-        app = Application(backend="win32").connect(title_re=TITULO_PRINCIPAL + ".*", timeout=5)
-    except ElementNotFoundError as e:
-        raise RoboIndisponivel(
-            "SGI.exe nao esta aberto/logado nesta maquina - abra e logue manualmente."
-        ) from e
+        app = _conectar_app()
+    except ElementNotFoundError:
+        _logar_sgi()
+        try:
+            app = _conectar_app()
+        except ElementNotFoundError as e:
+            raise RoboIndisponivel("SGI nao abriu/logou a tempo.") from e
+
     main = app.window(title_re=TITULO_PRINCIPAL + ".*")
     rep = main.child_window(title=TITULO_RELATORIO, class_name=CLASSE_RELATORIO)
     if not rep.exists():
-        raise RoboIndisponivel(
-            f"Janela '{TITULO_RELATORIO}' nao esta aberta no SGI. Abra uma vez em "
-            "Relatorios > Compras > Relacao de Custo de Compras e deixe aberta (pode minimizar)."
-        )
+        main.menu_select("Relatórios->Compras->Relação de Custo de Compras")
+        rep = main.child_window(title=TITULO_RELATORIO, class_name=CLASSE_RELATORIO)
+        try:
+            rep.wait("exists", timeout=15)
+        except PywinautoTimeoutError:
+            raise RoboIndisponivel(
+                f"Cliquei no menu mas a janela '{TITULO_RELATORIO}' nao apareceu em 15s "
+                "(o caminho do menu pode ter mudado)."
+            )
     rep.restore()  # garante que da pra interagir mesmo se estava minimizada
     return app, rep
 
@@ -192,7 +251,16 @@ def main(argv=None) -> int:
         feitos = set()
         if not args.dry_run:
             from estoque import db
-            db.init_schema()
+            try:
+                db.init_schema()
+            except Exception as e:  # noqa: BLE001
+                # init_schema roda um script com varios "CREATE ... IF NOT EXISTS" numa
+                # chamada so - funciona com psycopg2 (libpq simple query protocol), nao
+                # testado ainda com pg8000 (que o robo usa - ver estoque/db.py). As
+                # tabelas ja existem em producao (criadas pelo painel/GitHub Actions,
+                # que usam psycopg2), entao pular aqui e seguro - so avisa.
+                print(f"AVISO: init_schema() falhou ({e}); seguindo sem recriar schema "
+                      "(ja deve existir, criado pelo painel).")
             feitos = db.dias_sincronizados_compras(LOJA)
         dias = sync_core.dias_a_sincronizar(inicio, hoje, feitos, janela)
 
