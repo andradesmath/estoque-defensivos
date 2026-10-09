@@ -182,17 +182,23 @@ def _definir_empresa(campo, texto: str) -> None:
         )
     popup = novas[0]
 
-    prect = popup.rectangle()
-    altura_linha = prect.height() / len(_EMPRESAS_ORDEM)
-    y = int((indice + 0.5) * altura_linha)
-    popup.click_input(coords=(prect.width() // 2, y))
+    # Clique calculado por posicao/altura de linha (altura real ~13px) se mostrou
+    # impreciso (clique caiu na borda entre linhas, selecionou nada - campo ficou vazio).
+    # Em vez de mais ajuste fino de pixel, navega por teclado dentro do popup: {HOME}
+    # sempre pula pro primeiro item (ponto de partida conhecido, independente de qual
+    # empresa estava selecionada antes), {DOWN} x indice anda ate a linha certa, {ENTER}
+    # confirma - robusto a qualquer altura/posicao de linha real.
+    popup.type_keys("{HOME}")
+    if indice > 0:
+        popup.type_keys("{DOWN}" * indice)
+    popup.type_keys("{ENTER}")
     time.sleep(0.3)
 
     atual = campo.window_text()
     if texto not in atual:
         raise RoboIndisponivel(
-            f"Campo Empresa ficou {atual!r} depois de clicar na linha {indice} do popup "
-            f"(esperado {texto!r}; popup rect={prect}, altura_linha={altura_linha:.1f})."
+            f"Campo Empresa ficou {atual!r} depois de navegar ate a linha {indice} do "
+            f"popup por teclado (esperado {texto!r})."
         )
 
 
