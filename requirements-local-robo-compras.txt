@@ -2,8 +2,11 @@
 # GitHub Actions nem no Streamlit Cloud). Precisa do Python de 32 bits, mesma arquitetura
 # do SGI.exe, senao pywinauto nao enxerga os controles da janela corretamente:
 #   py -3.11-32 -m pip install -r requirements-local-robo-compras.txt
+#
+# Sem pandas de propósito: não existe build pronta de pandas para Windows 32 bits em
+# nenhuma versão compatível com Python 3.11 (só compila do zero, exige toolchain que
+# essa máquina não tem). O parser usa xlrd (puro Python) em vez de pandas.
 pywinauto>=0.6.9
-pandas
 xlrd>=2.0.1
 SQLAlchemy>=2.0.0
 psycopg2-binary>=2.9.9
