@@ -8,8 +8,6 @@ from __future__ import annotations
 from datetime import date, timedelta
 from typing import Callable
 
-from . import parser_sgi
-
 LOJAS = ("Porteira", "Casa de Adubo")
 
 
@@ -43,7 +41,12 @@ def processar_pdf_dia(
     permitir_zerar: bool = False,
 ) -> dict:
     """Parse -> valida -> grava (idempotente). Lança RelatorioInvalido sem gravar nada se
-    o PDF não for confiável. `gravar` é db.substituir_movimentacao_dia (injetável)."""
+    o PDF não for confiável. `gravar` é db.substituir_movimentacao_dia (injetável).
+
+    Import de parser_sgi é local (não no topo do módulo) de propósito: parser_sgi usa
+    pypdf, que scripts/sync_compras_sgi.py (Python 32-bit, sem pypdf instalado) não
+    precisa - só quem realmente processa PDF de vendas (esta função) paga esse custo."""
+    from . import parser_sgi
     res = parser_sgi.parse_relatorio_defensivos(pdf_bytes)
     problemas = parser_sgi.validar(res, dia_esperado=dia, grupo_esperado=grupo if res.itens else None)
     # Relatório sem nenhum item: só aceitamos como "dia sem vendas" se o PDF for curto

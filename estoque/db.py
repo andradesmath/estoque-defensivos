@@ -16,7 +16,14 @@ from decimal import Decimal
 from functools import lru_cache
 from pathlib import Path
 
-import pandas as pd
+try:
+    import pandas as pd
+except ImportError:  # scripts/sync_compras_sgi.py roda em Python 32-bit onde pandas
+    # não tem build pronta (ver estoque/parser_compras_sgi.py) - esse robô só chama
+    # init_schema/substituir_movimentacao_entrada_dia/dias_sincronizados_compras,
+    # nenhuma delas usa pandas; o resto do módulo (cloud/GitHub Actions, com pandas
+    # instalado) continua normal.
+    pd = None
 from sqlalchemy import bindparam, create_engine, text
 
 from .util import normalizar_cod, para_decimal, para_int, texto_ou_none
@@ -468,8 +475,13 @@ def substituir_movimentacao_entrada_dia(
 
 
 def dias_sincronizados_compras(loja: str) -> set[date]:
-    df = _df("SELECT data FROM sync_dias_compras WHERE loja = :l", l=loja)
-    return set(df["data"]) if not df.empty else set()
+    # Sem pandas de propósito (ver import no topo do arquivo): esta função roda tanto
+    # no painel (com pandas) quanto no robô local scripts/sync_compras_sgi.py (sem).
+    with get_engine().connect() as conn:
+        linhas = conn.execute(
+            text("SELECT data FROM sync_dias_compras WHERE loja = :l"), {"l": loja}
+        ).fetchall()
+    return {r[0] for r in linhas}
 
 
 def listar_sync_dias_compras(limite: int = 200) -> pd.DataFrame:
