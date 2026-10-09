@@ -194,11 +194,25 @@ def _definir_empresa(campo, texto: str) -> None:
     # (campo.window_text()) era impossivel de passar - window_text() de um
     # TDBLookupComboBox e SEMPRE '' (ele desenha o proprio texto a partir do dataset),
     # entao o clique, que ja funcionava, parecia estar falhando.
+    # ESPERA a lista renderizar antes de clicar. Sem isso o popup aparece VAZIO (so a
+    # moldura - o usuario capturou exatamente isso em 09/10/2026) e o clique cai no
+    # nada, deixando a empresa no padrao. No teste manual isso nao aparecia porque
+    # havia segundos entre abrir e clicar (round-trip de screenshot).
+    time.sleep(1.2)
+
     prect = popup.rectangle()
     altura_linha = prect.height() / len(_EMPRESAS_ORDEM)
     y = int((indice + 0.5) * altura_linha)
     popup.click_input(coords=(prect.width() // 2, y))
-    time.sleep(0.3)
+    time.sleep(0.4)
+
+    # Se o popup continua aberto, o clique nao selecionou nada - cai pro caminho que o
+    # usuario usa na mao: a lista abre com a ultima empresa (a de baixo) destacada,
+    # entao sobe com {UP} ate a linha certa e confirma com {TAB} (nao {ENTER}).
+    if popup.exists() and popup.is_visible():
+        subir = (len(_EMPRESAS_ORDEM) - 1) - indice
+        campo.type_keys("{UP " + str(subir) + "}{TAB}" if subir > 0 else "{TAB}")
+        time.sleep(0.4)
 
     # Sem verificacao aqui de proposito: nao da pra ler o valor do combo (window_text()
     # sempre ''). Quem confere e conectar_relatorio(), lendo a faixa "Licenciado para
