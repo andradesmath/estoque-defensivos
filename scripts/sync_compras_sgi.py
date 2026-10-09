@@ -182,32 +182,28 @@ def _definir_empresa(campo, texto: str) -> None:
         )
     popup = novas[0]
 
-    # Clique calculado por posicao/altura de linha (altura real ~13px) se mostrou
-    # impreciso (clique caiu na borda entre linhas, selecionou nada - campo ficou vazio).
-    # Em vez de mais ajuste fino de pixel, navega por teclado dentro do popup: {HOME}
-    # sempre pula pro primeiro item (ponto de partida conhecido, independente de qual
-    # empresa estava selecionada antes), {DOWN} x indice anda ate a linha certa, {ENTER}
-    # confirma - robusto a qualquer altura/posicao de linha real.
-    # IMPORTANTE: tudo numa unica chamada de type_keys (1 string so) - chamadas
-    # separadas falharam com ElementNotVisible na 2a tecla.
+    # CLIQUE na linha certa, por posicao. VALIDADO AO VIVO em 09/10/2026: com o popup
+    # aberto em (L547,T388,R725,B455) - 67px de altura, 5 itens, ~13.4px por linha -
+    # clicar no centro da 3a linha (y=421 absoluto = 33 relativo ao topo, que e
+    # exatamente (2+0,5)*13,4) selecionou PORTEIRA AGROCOMERCIAL e o campo passou a
+    # exibi-la.
     #
-    # IMPORTANTE #2: as teclas vao pro `campo` (o combo), NAO pro `popup` - o popup e so
-    # a renderizacao visual da lista; o foco real do teclado continua no combo (que foi
-    # quem recebeu o clique/F4/Alt+Down que abriu o popup), e e o combo quem processa
-    # Home/Down/Enter internamente e atualiza o popup em resposta. Mandar pro popup nao
-    # deu erro mas tambem nao fez nada (campo ficou vazio) - sinal de que o popup so
-    # escuta, nao e ele quem trata a tecla.
-    campo.type_keys("{HOME}" + "{DOWN}" * indice + "{ENTER}")
+    # Teclado NAO funciona aqui (testado: Home/Down/Enter tanto no popup quanto no
+    # campo nao mudam nada - o SGI logou em CASA DE ADUBO assim mesmo). O caminho por
+    # teclado chegou a ser adotado por engano porque a verificacao da epoca
+    # (campo.window_text()) era impossivel de passar - window_text() de um
+    # TDBLookupComboBox e SEMPRE '' (ele desenha o proprio texto a partir do dataset),
+    # entao o clique, que ja funcionava, parecia estar falhando.
+    prect = popup.rectangle()
+    altura_linha = prect.height() / len(_EMPRESAS_ORDEM)
+    y = int((indice + 0.5) * altura_linha)
+    popup.click_input(coords=(prect.width() // 2, y))
     time.sleep(0.3)
 
-    # NAO da pra conferir aqui lendo o combo: window_text() de um TDBLookupComboBox e
-    # SEMPRE '' - ele desenha o proprio texto a partir do dataset, nao guarda no texto
-    # da janela. Provado pelo print_control_identifiers() de 09/10/2026, que mostrou
-    # ComboBox - '' enquanto a tela exibia "CASA DE ADUBOS CAFE BOM" no campo. A
-    # verificacao antiga (`if texto not in campo.window_text()`) era impossivel de
-    # passar e abortava o login mesmo quando a selecao tinha funcionado.
-    # Quem confere de verdade e o proprio SGI, depois do Confirmar (ver _logar_sgi):
-    # as credenciais so valem pra PORTEIRA, entao empresa errada = login recusado.
+    # Sem verificacao aqui de proposito: nao da pra ler o valor do combo (window_text()
+    # sempre ''). Quem confere e conectar_relatorio(), lendo a faixa "Licenciado para
+    # ..." depois do login - e ela PARA a execucao se a empresa estiver errada, antes
+    # de buscar qualquer dado.
 
 
 def _logar_sgi() -> None:
