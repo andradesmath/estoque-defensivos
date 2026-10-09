@@ -285,7 +285,7 @@ def conectar_relatorio():
     robusto, sem digitar senha nem navegar menu); (2) SGI aberto mas relatorio fechado
     -> abre pelo menu Relatorios>Compras>Relacao de Custo de Compras (confirmado
     manualmente em 09/10/2026); (3) SGI fechado -> abre e loga sozinho (ver _logar_sgi,
-    NAO testado ao vivo ainda) e cai no caso (2)."""
+    testado e validado ao vivo em 09/10/2026) e cai no caso (2)."""
     try:
         app = _conectar_app()
     except (ElementNotFoundError, PywinautoTimeoutError):
@@ -298,18 +298,27 @@ def conectar_relatorio():
     main = app.window(title_re=TITULO_PRINCIPAL + ".*")
     rep = main.child_window(title=TITULO_RELATORIO, class_name=CLASSE_RELATORIO)
     if not rep.exists():
-        # Logo apos o login, o SGI mostra um splash "Conectado! Carregando inventarios"
-        # que deixa o menu principal desabilitado ate terminar - sem esperar isso,
-        # menu_select da ElementNotEnabled (visto ao vivo em 09/10/2026). Checagem
-        # barata (is_enabled() so le o estado da janela) - nao atrapalha o caminho em
-        # que o SGI ja estava pronto havia tempo.
-        fim = time.time() + 60.0
+        # Logo apos o login, o SGI mostra um splash "Conectado! Carregando
+        # inventarios/clientes..." que deixa o menu principal desabilitado ate
+        # terminar - sem esperar isso, menu_select da ElementNotEnabled (visto ao vivo
+        # em 09/10/2026). O carregamento (dados vindo do servidor remoto) pode legitima-
+        # mente demorar mais de 1 minuto - 60s nao foi suficiente numa execucao real.
+        # Checagem barata (is_enabled() so le o estado da janela) - nao atrapalha o
+        # caminho em que o SGI ja estava pronto havia tempo. Avisa a cada 15s pra nao
+        # parecer travado rodando sem interacao.
+        limite = float(os.environ.get("SYNC_COMPRAS_TIMEOUT_CARGA", "300"))
+        fim = time.time() + limite
+        ultimo_aviso = time.time()
         while not main.is_enabled():
             if time.time() > fim:
                 raise RoboIndisponivel(
-                    "SGI nao ficou pronto (menu habilitado) em 60s depois do login - "
-                    "pode estar travado carregando inventarios."
+                    f"SGI nao ficou pronto (menu habilitado) em {limite:.0f}s depois do "
+                    "login - pode estar travado carregando inventarios/clientes (ou o "
+                    "servidor remoto esta lento/fora)."
                 )
+            if time.time() - ultimo_aviso > 15:
+                print(f"  aguardando SGI terminar de carregar... ({int(time.time() - (fim - limite))}s)")
+                ultimo_aviso = time.time()
             time.sleep(1.0)
         main.menu_select("Relatórios->Compras->Relação de Custo de Compras")
         rep = main.child_window(title=TITULO_RELATORIO, class_name=CLASSE_RELATORIO)
