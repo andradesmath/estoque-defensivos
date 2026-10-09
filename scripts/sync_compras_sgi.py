@@ -120,7 +120,7 @@ _EMPRESAS_ORDEM = [
 ]
 
 
-def _definir_empresa(campo, texto: str) -> None:
+def _definir_empresa(campo, texto: str, metodo: str = "clique") -> None:
     """Confirmado via print_control_identifiers() em 09/10/2026: Empresa e um
     TDBLookupComboBox (combo ligado a um dataset), NAO um TComboBox nativo - por isso
     nem .select() nem as mensagens CB_* (CB_GETCOUNT voltou vazio) funcionam nele. O
@@ -194,25 +194,38 @@ def _definir_empresa(campo, texto: str) -> None:
     # (campo.window_text()) era impossivel de passar - window_text() de um
     # TDBLookupComboBox e SEMPRE '' (ele desenha o proprio texto a partir do dataset),
     # entao o clique, que ja funcionava, parecia estar falhando.
-    # ESPERA a lista renderizar antes de clicar. Sem isso o popup aparece VAZIO (so a
-    # moldura - o usuario capturou exatamente isso em 09/10/2026) e o clique cai no
-    # nada, deixando a empresa no padrao. No teste manual isso nao aparecia porque
+    # ESPERA a lista renderizar. Sem isso o popup aparece VAZIO (so a moldura - o
+    # usuario capturou exatamente isso em 09/10/2026) e qualquer interacao cai no
+    # nada, deixando a empresa no padrao. No teste manual isso nao acontecia porque
     # havia segundos entre abrir e clicar (round-trip de screenshot).
     time.sleep(1.2)
 
-    prect = popup.rectangle()
-    altura_linha = prect.height() / len(_EMPRESAS_ORDEM)
-    y = int((indice + 0.5) * altura_linha)
-    popup.click_input(coords=(prect.width() // 2, y))
+    if metodo == "setas":
+        # Caminho que o usuario faz na mao: a lista abre com a ULTIMA empresa
+        # destacada, entao sobe com {UP} ate a linha certa e confirma com {TAB}
+        # (TAB, nao ENTER - foi o que ele descreveu).
+        subir = (len(_EMPRESAS_ORDEM) - 1) - indice
+        campo.type_keys(("{UP " + str(subir) + "}" if subir > 0 else "") + "{TAB}")
+    else:
+        # CLIQUE na linha certa, por posicao. Validado ao vivo em 09/10/2026: popup em
+        # (L547,T388,R725,B455) - 67px, 5 itens, ~13.4px por linha - clicar no centro
+        # da 3a linha selecionou PORTEIRA AGROCOMERCIAL.
+        prect = popup.rectangle()
+        altura_linha = prect.height() / len(_EMPRESAS_ORDEM)
+        y = int((indice + 0.5) * altura_linha)
+        popup.click_input(coords=(prect.width() // 2, y))
     time.sleep(0.4)
 
-    # Se o popup continua aberto, o clique nao selecionou nada - cai pro caminho que o
-    # usuario usa na mao: a lista abre com a ultima empresa (a de baixo) destacada,
-    # entao sobe com {UP} ate a linha certa e confirma com {TAB} (nao {ENTER}).
-    if popup.exists() and popup.is_visible():
-        subir = (len(_EMPRESAS_ORDEM) - 1) - indice
-        campo.type_keys("{UP " + str(subir) + "}{TAB}" if subir > 0 else "{TAB}")
-        time.sleep(0.4)
+    # Fecha o popup se ele tiver ficado aberto (senao o Confirmar nao e clicavel).
+    # popup e um wrapper ja resolvido: nao tem .exists() - checa pelo is_visible(),
+    # protegido, porque a janela pode ter sumido nesse meio tempo.
+    try:
+        ainda_aberto = popup.is_visible()
+    except Exception:  # noqa: BLE001 - sumiu = fechou = selecionou
+        ainda_aberto = False
+    if ainda_aberto:
+        campo.type_keys("{TAB}")
+        time.sleep(0.3)
 
     # Sem verificacao aqui de proposito: nao da pra ler o valor do combo (window_text()
     # sempre ''). Quem confere e conectar_relatorio(), lendo a faixa "Licenciado para
@@ -271,7 +284,7 @@ def _logar_sgi():
     return app
 
 
-def _preencher_login(app) -> None:
+def _preencher_login(app, metodo_empresa: str = "clique") -> None:
     """Preenche e confirma a tela "Senha..." que ja esta aberta. Separado de
     _logar_sgi porque essa tela aparece em dois momentos: quando o robo abre o SGI do
     zero, e quando o SGI ja esta aberto mas deslogado (alguem clicou em Logoff) - nesse
@@ -325,7 +338,7 @@ def _preencher_login(app) -> None:
         )
     combos.sort(key=lambda w: w.rectangle().left)
     campo_empresa, _campo_modulo = combos  # esquerda = Empresa, direita = Modulo
-    _definir_empresa(campo_empresa, EMPRESA_LOGIN)
+    _definir_empresa(campo_empresa, EMPRESA_LOGIN, metodo_empresa)
 
     # O titulo real do botao e "Confir&mar" - o & (acelerador) fica no MEIO da palavra,
     # nao no comeco (confirmado no print_control_identifiers() de 09/10/2026), entao
@@ -370,7 +383,11 @@ def _empresa_ativa(main) -> str:
     texto nenhum (TDBLookupComboBox - window_text() sempre '') e o .xls exportado so
     traz o cabecalho das colunas, sem identificacao de empresa. Devolve '' se nao achar
     a faixa (o chamador decide o que fazer)."""
-    for ctrl in main.descendants():
+    try:
+        filhos = main.descendants()
+    except Exception:  # noqa: BLE001 - janela pode estar trocando de estado
+        return ""
+    for ctrl in filhos:
         try:
             texto = ctrl.window_text() or ""
         except Exception:  # noqa: BLE001 - nem todo descendente da pra ler
@@ -379,6 +396,58 @@ def _empresa_ativa(main) -> str:
             depois = texto.split("Licenciado para", 1)[1]
             return depois.split(" - SGI")[0].strip()
     return ""
+
+
+# Jeitos conhecidos de escolher a empresa no combo, em ordem de preferencia. O robo
+# tenta, confere pela faixa "Licenciado para ..." e, se errou, refaz o login com o
+# proximo - ver conectar_relatorio.
+_METODOS_EMPRESA = ["clique", "setas"]
+
+
+def _esperar_sgi_pronto(main) -> None:
+    """Espera o SGI terminar o carregamento pos-login (splash "Conectado! Carregando
+    inventarios/clientes...", que deixa o menu desabilitado - sem isso menu_select da
+    ElementNotEnabled). Pode passar de 1 minuto, porque os dados vem do servidor
+    remoto. A janela principal pode nem EXISTIR ainda nesse meio tempo: is_enabled()
+    estourando ElementNotFoundError significa "ainda nao esta pronta", nao erro."""
+    def _pronto() -> bool:
+        try:
+            return bool(main.is_enabled())
+        except (ElementNotFoundError, PywinautoTimeoutError):
+            return False
+
+    limite = float(os.environ.get("SYNC_COMPRAS_TIMEOUT_CARGA", "300"))
+    fim = time.time() + limite
+    ultimo_aviso = time.time()
+    while not _pronto():
+        if time.time() > fim:
+            raise RoboIndisponivel(
+                f"SGI nao ficou pronto (menu habilitado) em {limite:.0f}s depois do "
+                "login - pode estar travado carregando inventarios/clientes (ou o "
+                "servidor remoto esta lento/fora)."
+            )
+        if time.time() - ultimo_aviso > 15:
+            print(f"  aguardando SGI terminar de carregar... ({int(time.time() - (fim - limite))}s)")
+            ultimo_aviso = time.time()
+        time.sleep(1.0)
+
+
+def _fazer_logoff(main) -> bool:
+    """Clica no botao Logoff da barra de ferramentas (volta pra tela de login na hora,
+    confirmado ao vivo em 09/10/2026). Devolve False se nao achar o botao."""
+    try:
+        filhos = main.descendants()
+    except Exception:  # noqa: BLE001
+        return False
+    for ctrl in filhos:
+        try:
+            if (ctrl.window_text() or "").strip().replace("&", "").upper() == "LOGOFF":
+                ctrl.click_input()
+                time.sleep(1.5)
+                return True
+        except Exception:  # noqa: BLE001 - nem todo descendente responde
+            continue
+    return False
 
 
 def conectar_relatorio():
@@ -417,36 +486,50 @@ def conectar_relatorio():
     # de 1 minuto. Checagem barata (is_enabled() so le o estado da janela) - nao
     # atrapalha o caminho em que o SGI ja estava pronto havia tempo. Avisa a cada 15s
     # pra nao parecer travado rodando sem interacao.
-    limite = float(os.environ.get("SYNC_COMPRAS_TIMEOUT_CARGA", "300"))
-    fim = time.time() + limite
-    ultimo_aviso = time.time()
-    while not main.is_enabled():
-        if time.time() > fim:
-            raise RoboIndisponivel(
-                f"SGI nao ficou pronto (menu habilitado) em {limite:.0f}s depois do "
-                "login - pode estar travado carregando inventarios/clientes (ou o "
-                "servidor remoto esta lento/fora)."
-            )
-        if time.time() - ultimo_aviso > 15:
-            print(f"  aguardando SGI terminar de carregar... ({int(time.time() - (fim - limite))}s)")
-            ultimo_aviso = time.time()
-        time.sleep(1.0)
+    # A janela principal pode nem EXISTIR ainda enquanto o SGI carrega (o processo ja
+    # subiu, a janela nao): nesse caso is_enabled() estoura ElementNotFoundError, que
+    # significa "ainda nao esta pronta", nao "deu errado" - sem tratar isso, o erro
+    # escapava e derrubava a execucao inteira (visto em 09/10/2026).
+    _esperar_sgi_pronto(main)
 
-    # TRAVA DE SEGURANCA: confere a empresa logada ANTES de buscar qualquer dado. Em
-    # 09/10/2026 o robo rodou 18 dias inteiros logado em CASA DE ADUBO por engano - o
-    # relatorio veio vazio em todos (empresa errada nao tem essas compras). Se tivesse
-    # vindo com dados, teria gravado compras da loja errada no estoque.
-    ativa = _empresa_ativa(main)
-    if ativa and ativa.strip().upper() != EMPRESA_LOGIN.strip().upper():
-        raise RoboIndisponivel(
-            f"O SGI esta logado na empresa {ativa!r}, e nao em {EMPRESA_LOGIN!r} - os "
-            "dados de compras viriam da empresa errada, entao parei antes de buscar "
-            "qualquer coisa. Clique em Logoff no SGI e entre em "
-            f"{EMPRESA_LOGIN} (ou feche o SGI e rode de novo)."
-        )
-    if not ativa:
-        print("  AVISO: nao achei a faixa 'Licenciado para ...' pra conferir a empresa "
-              "logada - seguindo, mas sem essa garantia.")
+    # TRAVA + AUTOCORRECAO da empresa, ANTES de buscar qualquer dado. Em 09/10/2026 o
+    # robo rodou 18 dias inteiros logado em CASA DE ADUBO por engano - o relatorio veio
+    # vazio em todos (empresa errada nao tem essas compras); se tivesse vindo com
+    # dados, teria gravado compras da loja errada no estoque.
+    #
+    # Nao da pra conferir a empresa ANTES de confirmar o login (o combo nao expoe
+    # texto - ver _definir_empresa), entao a estrategia e: logar, conferir pela faixa
+    # "Licenciado para ...", e se tiver caido na empresa errada, fazer Logoff e logar
+    # de novo com o outro jeito de escolher a empresa. Em vez de depender de um unico
+    # metodo estar certo, tenta e confere.
+    # Comeca pelo metodo DIFERENTE do usado no login inicial (que foi o primeiro da
+    # lista) - repetir o mesmo que acabou de errar seria so perder um login inteiro.
+    for metodo in _METODOS_EMPRESA[1:] + _METODOS_EMPRESA[:1]:
+        ativa = _empresa_ativa(main)
+        if not ativa:
+            print("  AVISO: nao achei a faixa 'Licenciado para ...' pra conferir a "
+                  "empresa logada - seguindo, mas sem essa garantia.")
+            break
+        if ativa.strip().upper() == EMPRESA_LOGIN.strip().upper():
+            break
+        print(f"  logou em {ativa!r} (esperado {EMPRESA_LOGIN!r}) - refazendo o login "
+              f"escolhendo a empresa por '{metodo}'...")
+        if not _fazer_logoff(main):
+            raise RoboIndisponivel(
+                f"O SGI esta logado na empresa {ativa!r}, e nao em {EMPRESA_LOGIN!r}, e "
+                "nao achei o botao Logoff pra corrigir sozinho. Faca Logoff e entre em "
+                f"{EMPRESA_LOGIN} na mao (ou feche o SGI e rode de novo)."
+            )
+        _preencher_login(app, metodo)
+        _esperar_sgi_pronto(main)
+    else:
+        ativa = _empresa_ativa(main)
+        if ativa and ativa.strip().upper() != EMPRESA_LOGIN.strip().upper():
+            raise RoboIndisponivel(
+                f"Mesmo tentando todos os jeitos de escolher a empresa "
+                f"({', '.join(_METODOS_EMPRESA)}), o SGI segue logado em {ativa!r} e nao "
+                f"em {EMPRESA_LOGIN!r} - parei antes de buscar qualquer dado."
+            )
 
     rep = main.child_window(title=TITULO_RELATORIO, class_name=CLASSE_RELATORIO)
     if not rep.exists():
@@ -597,6 +680,7 @@ def processar_dia(app, rep, dia: date, gravar, dry_run: bool) -> dict:
     if rel.aviso and not rel.itens:
         print(f"  [{dia:%d/%m/%Y}] aviso: {rel.aviso}")
     linhas = parser_compras_sgi.para_linhas_movimentacao(rel)
+    _avisar_duplicatas(dia, linhas)
 
     if dry_run:
         print(f"  [dry-run] {dia:%d/%m/%Y}: {len(linhas)} produto(s) - nada gravado.")
@@ -608,6 +692,30 @@ def processar_dia(app, rep, dia: date, gravar, dry_run: bool) -> dict:
     out = gravar(LOJA, dia, linhas)
     print(f"  [{LOJA}] {dia:%d/%m/%Y}: {len(linhas)} produto(s) (removidos: {out['removidos']})")
     return out
+
+
+def _avisar_duplicatas(dia: date, linhas: list) -> None:
+    """Avisa se algum produto MONITORADO dessa compra ja tem entrada manual lancada no
+    mesmo dia - os dois somam no saldo (v_saldo_produto soma ajustes E entradas por
+    compra), entao seria contagem em dobro. Aconteceu de verdade com o JOINER em
+    02/10/2026 (ajuste 'ENTRADA NF' de +12 por cima da compra de 12).
+
+    So checa produtos cadastrados - compra de coleira, racao etc. nao entra no controle
+    de defensivos e nao tem como ter ajuste. Falha de banco aqui nunca derruba o dia:
+    o aviso e um extra, nao parte da sincronizacao."""
+    if not linhas:
+        return
+    try:
+        from estoque import db as _db
+        dups = _db.possiveis_duplicatas_compra(dia, [l["cod_produto"] for l in linhas])
+    except Exception as e:  # noqa: BLE001
+        print(f"  (nao deu pra checar lancamentos manuais duplicados em {dia:%d/%m}: {e})")
+        return
+    for d in dups:
+        print(f"  !! ATENCAO {dia:%d/%m/%Y}: {d['cod_produto']} {d['descricao']} tem ajuste "
+              f"manual #{d['id']} de +{d['quantidade']} ({d['tipo']}"
+              f"{', ' + d['observacao'] if d['observacao'] else ''}) no mesmo dia - "
+              "vai contar em dobro com esta compra. Exclua o ajuste no painel.")
 
 
 def main(argv=None) -> int:
