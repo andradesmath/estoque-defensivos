@@ -200,12 +200,14 @@ def _definir_empresa(campo, texto: str) -> None:
     campo.type_keys("{HOME}" + "{DOWN}" * indice + "{ENTER}")
     time.sleep(0.3)
 
-    atual = campo.window_text()
-    if texto not in atual:
-        raise RoboIndisponivel(
-            f"Campo Empresa ficou {atual!r} depois de navegar ate a linha {indice} do "
-            f"popup por teclado (esperado {texto!r})."
-        )
+    # NAO da pra conferir aqui lendo o combo: window_text() de um TDBLookupComboBox e
+    # SEMPRE '' - ele desenha o proprio texto a partir do dataset, nao guarda no texto
+    # da janela. Provado pelo print_control_identifiers() de 09/10/2026, que mostrou
+    # ComboBox - '' enquanto a tela exibia "CASA DE ADUBOS CAFE BOM" no campo. A
+    # verificacao antiga (`if texto not in campo.window_text()`) era impossivel de
+    # passar e abortava o login mesmo quando a selecao tinha funcionado.
+    # Quem confere de verdade e o proprio SGI, depois do Confirmar (ver _logar_sgi):
+    # as credenciais so valem pra PORTEIRA, entao empresa errada = login recusado.
 
 
 def _logar_sgi() -> None:
@@ -279,6 +281,24 @@ def _logar_sgi() -> None:
 
     login.child_window(title_re="&?Confirmar", class_name="TBitBtn").click()
     time.sleep(2.0)
+
+    # Esta e a verificacao REAL de que a empresa certa foi selecionada: nao da pra ler
+    # o valor do combo (window_text() de TDBLookupComboBox e sempre '' - ver
+    # _definir_empresa), mas as credenciais so valem pra PORTEIRA, entao se a empresa
+    # estivesse errada o SGI responderia "Usuario/Senha Invalido(a) para esta Empresa!"
+    # num dialogo de erro (visto ao vivo em 09/10/2026). Sem dialogo = logou = empresa
+    # certa.
+    erro = app.window(title_re="Erro.*")
+    if erro.exists(timeout=3):
+        try:
+            detalhe = " ".join(t for t in (c.window_text() for c in erro.children()) if t)
+        except Exception:  # noqa: BLE001 - mensagem e so pra ajudar o diagnostico
+            detalhe = ""
+        raise RoboIndisponivel(
+            f"O SGI recusou o login: {detalhe or 'apareceu um dialogo de erro'}. Se for "
+            f"'Usuario/Senha Invalido(a) para esta Empresa', ou a selecao da empresa "
+            f"({EMPRESA_LOGIN}) nao pegou, ou SGI_SENHA_DESKTOP esta errada no .env."
+        )
 
 
 def conectar_relatorio():
