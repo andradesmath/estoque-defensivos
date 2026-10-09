@@ -1,0 +1,10 @@
+# Dependências do robô local scripts/sync_compras_sgi.py (roda no Windows do SGI, NAO no
+# GitHub Actions nem no Streamlit Cloud). Precisa do Python de 32 bits, mesma arquitetura
+# do SGI.exe, senao pywinauto nao enxerga os controles da janela corretamente:
+#   py -3.11-32 -m pip install -r requirements-local-robo-compras.txt
+pywinauto>=0.6.9
+pandas
+xlrd>=2.0.1
+SQLAlchemy>=2.0.0
+psycopg2-binary>=2.9.9
+python-dotenv>=1.0.0

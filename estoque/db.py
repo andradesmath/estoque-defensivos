@@ -410,6 +410,104 @@ def substituir_movimentacao_dia(
     return {"gravados": len(linhas), "removidos": removidos}
 
 
+# ------------------------------------------------------------ movimentação de entrada (compras SGI)
+def substituir_movimentacao_entrada_dia(
+    loja: str, dia: date, linhas: list[dict], permitir_zerar: bool = False,
+) -> dict:
+    """Espelho de substituir_movimentacao_dia, para ENTRADAS por compra sincronizadas do
+    relatório 'Relação de Custo de Compras' do SGI (scripts/sync_compras_sgi.py).
+    Idempotente: upsert por (cod, dia, loja), nunca soma a mesma compra duas vezes
+    mesmo rodando com janelas sobrepostas. `linhas`:
+    [{'cod_produto','descricao','quantidade_entrada','valor_entrada'}]."""
+    cods = [l["cod_produto"] for l in linhas]
+    if len(set(cods)) != len(cods):
+        raise ValueError("linhas com código repetido — agregue antes de gravar.")
+    with get_engine().begin() as conn:
+        if not linhas and not permitir_zerar:
+            existentes = conn.execute(
+                text("SELECT COUNT(*) FROM movimentacao_entrada_compra WHERE loja = :l AND data = :d"),
+                {"l": loja, "d": dia},
+            ).scalar_one()
+            if existentes:
+                raise ZerarDiaNaoPermitido(
+                    f"Relatório de compras vazio para {loja} em {dia:%d/%m/%Y}, mas o dia já tem "
+                    f"{existentes} produto(s) gravado(s). Nada foi alterado."
+                )
+        if linhas:
+            conn.execute(text("""
+                INSERT INTO movimentacao_entrada_compra
+                    (cod_produto, data, loja, descricao_sgi, quantidade_entrada, valor_entrada)
+                VALUES (:cod, :d, :l, :desc, :q, :v)
+                ON CONFLICT (cod_produto, data, loja) DO UPDATE SET
+                    descricao_sgi = EXCLUDED.descricao_sgi,
+                    quantidade_entrada = EXCLUDED.quantidade_entrada,
+                    valor_entrada = EXCLUDED.valor_entrada,
+                    atualizado_em = now()
+            """), [{"cod": l["cod_produto"], "d": dia, "l": loja, "desc": l.get("descricao"),
+                    "q": l["quantidade_entrada"], "v": l["valor_entrada"]} for l in linhas])
+        if cods:
+            r = conn.execute(
+                text("DELETE FROM movimentacao_entrada_compra WHERE loja = :l AND data = :d AND cod_produto NOT IN :cods")
+                .bindparams(bindparam("cods", expanding=True)),
+                {"l": loja, "d": dia, "cods": cods},
+            )
+        else:
+            r = conn.execute(text("DELETE FROM movimentacao_entrada_compra WHERE loja = :l AND data = :d"),
+                             {"l": loja, "d": dia})
+        removidos = r.rowcount
+        qtd_total = sum((l["quantidade_entrada"] for l in linhas), Decimal(0))
+        valor_total = sum((l["valor_entrada"] for l in linhas), Decimal(0))
+        conn.execute(text("""
+            INSERT INTO sync_dias_compras (loja, data, n_produtos, qtd_total, valor_total)
+            VALUES (:l, :d, :n, :q, :v)
+            ON CONFLICT (loja, data) DO UPDATE SET
+                sincronizado_em = now(), n_produtos = EXCLUDED.n_produtos,
+                qtd_total = EXCLUDED.qtd_total, valor_total = EXCLUDED.valor_total
+        """), {"l": loja, "d": dia, "n": len(linhas), "q": qtd_total, "v": valor_total})
+    return {"gravados": len(linhas), "removidos": removidos}
+
+
+def dias_sincronizados_compras(loja: str) -> set[date]:
+    df = _df("SELECT data FROM sync_dias_compras WHERE loja = :l", l=loja)
+    return set(df["data"]) if not df.empty else set()
+
+
+def listar_sync_dias_compras(limite: int = 200) -> pd.DataFrame:
+    return _df("""SELECT loja, data, n_produtos, qtd_total, valor_total, sincronizado_em
+                  FROM sync_dias_compras ORDER BY data DESC, loja LIMIT :l""", l=limite)
+
+
+def listar_movimentacao_entrada_compra(ini: date | None = None, fim: date | None = None,
+                                       cod: str | None = None) -> pd.DataFrame:
+    cond, params = ["TRUE"], {}
+    if ini:
+        cond.append("data >= :ini"); params["ini"] = ini
+    if fim:
+        cond.append("data <= :fim"); params["fim"] = fim
+    if cod:
+        cond.append("cod_produto = :cod"); params["cod"] = normalizar_cod(cod)
+    return _df(f"""SELECT cod_produto, data, loja, descricao_sgi, quantidade_entrada, valor_entrada
+                  FROM movimentacao_entrada_compra WHERE {' AND '.join(cond)}
+                  ORDER BY data DESC, cod_produto""", **params)
+
+
+def produtos_defensivos_faltantes(lista_esperada: list[tuple[str, str]]) -> pd.DataFrame:
+    """Confere a lista fixa de códigos esperados (rol de defensivos) contra o cadastro:
+    devolve os que estão na lista mas NÃO existem (ou estão inativos) em `produtos`."""
+    if not lista_esperada:
+        return pd.DataFrame(columns=["cod_produto", "descricao_esperada"])
+    cods = [normalizar_cod(c) for c, _ in lista_esperada]
+    with get_engine().connect() as conn:
+        rows = conn.execute(
+            text("SELECT cod_produto FROM produtos WHERE cod_produto IN :cods AND ativo")
+            .bindparams(bindparam("cods", expanding=True)),
+            {"cods": cods},
+        ).fetchall()
+    existentes = {r[0] for r in rows}
+    faltando = [(c, d) for c, d in lista_esperada if normalizar_cod(c) not in existentes]
+    return pd.DataFrame(faltando, columns=["cod_produto", "descricao_esperada"])
+
+
 def listar_movimentacao(ini: date | None = None, fim: date | None = None, cod: str | None = None) -> pd.DataFrame:
     """Uma linha por (cod, data, loja)."""
     cond, params = ["TRUE"], {}

@@ -45,6 +45,22 @@ CREATE TABLE IF NOT EXISTS movimentacao_saida (
 );
 CREATE INDEX IF NOT EXISTS ix_mov_saida_data ON movimentacao_saida (data);
 
+-- Entradas por COMPRA, sincronizadas automaticamente do relatório "Relação de Custo de
+-- Compras" do SGI (robô local, estoque-defensivos/scripts/sync_compras_sgi.py). Mesmo
+-- padrão idempotente de movimentacao_saida: chave (cod, data, loja), upsert por dia —
+-- rodar o sync várias vezes com janelas sobrepostas não soma a mesma compra duas vezes.
+CREATE TABLE IF NOT EXISTS movimentacao_entrada_compra (
+    cod_produto        VARCHAR(10)   NOT NULL,
+    data               DATE          NOT NULL,
+    loja               VARCHAR(40)   NOT NULL,
+    descricao_sgi      TEXT,
+    quantidade_entrada NUMERIC(14,3) NOT NULL,
+    valor_entrada      NUMERIC(14,2) NOT NULL DEFAULT 0,
+    atualizado_em      TIMESTAMPTZ   NOT NULL DEFAULT now(),
+    PRIMARY KEY (cod_produto, data, loja)
+);
+CREATE INDEX IF NOT EXISTS ix_mov_entrada_compra_data ON movimentacao_entrada_compra (data);
+
 -- Movimentos manuais. quantidade é ASSINADA: positivo aumenta o estoque.
 CREATE TABLE IF NOT EXISTS ajustes (
     id              BIGSERIAL     PRIMARY KEY,
@@ -74,6 +90,19 @@ CREATE TABLE IF NOT EXISTS produtos_ignorados (
 -- Um registro por (loja, dia) já sincronizado com sucesso: base para descobrir dias
 -- faltantes e para auditar o que o relatório dizia (totais impressos no PDF).
 CREATE TABLE IF NOT EXISTS sync_dias (
+    loja             VARCHAR(40)   NOT NULL,
+    data             DATE          NOT NULL,
+    sincronizado_em  TIMESTAMPTZ   NOT NULL DEFAULT now(),
+    n_produtos       INTEGER       NOT NULL,
+    qtd_total        NUMERIC(14,3) NOT NULL,
+    valor_total      NUMERIC(14,2) NOT NULL,
+    PRIMARY KEY (loja, data)
+);
+
+-- Mesmo controle de "dias já vistos" de sync_dias, mas para o robô de Compras (janela
+-- móvel): sem isso, um dia sem nenhuma compra nunca entraria aqui e seria rebuscado
+-- para sempre (em vez de só nos últimos N dias da janela).
+CREATE TABLE IF NOT EXISTS sync_dias_compras (
     loja             VARCHAR(40)   NOT NULL,
     data             DATE          NOT NULL,
     sincronizado_em  TIMESTAMPTZ   NOT NULL DEFAULT now(),
@@ -125,7 +154,10 @@ SELECT
     COALESCE(a.total, 0)                                        AS ajustes_total,
     COALESCE(s.qtd, 0)                                          AS saidas_total,
     COALESCE(s.valor, 0)                                        AS valor_saidas_total,
-    p.saldo_inicial + COALESCE(a.total, 0) - COALESCE(s.qtd, 0) AS saldo_atual,
+    COALESCE(ec.qtd, 0)                                         AS entradas_compras_total,
+    COALESCE(ec.valor, 0)                                       AS valor_entradas_compras_total,
+    p.saldo_inicial + COALESCE(a.total, 0) - COALESCE(s.qtd, 0)
+        + COALESCE(ec.qtd, 0)                                   AS saldo_atual,
     p.preco_custo,
     p.preco_venda,
     p.lead_time_dias,
@@ -143,6 +175,15 @@ LEFT JOIN (
     WHERE m.data > p2.data_saldo_inicial
     GROUP BY m.cod_produto
 ) s ON s.cod_produto = p.cod_produto
+LEFT JOIN (
+    SELECT m.cod_produto,
+           SUM(m.quantidade_entrada) AS qtd,
+           SUM(m.valor_entrada)      AS valor
+    FROM movimentacao_entrada_compra m
+    JOIN produtos p4 ON p4.cod_produto = m.cod_produto
+    WHERE m.data > p4.data_saldo_inicial
+    GROUP BY m.cod_produto
+) ec ON ec.cod_produto = p.cod_produto
 LEFT JOIN (
     SELECT j.cod_produto, SUM(j.quantidade) AS total
     FROM ajustes j

@@ -15,7 +15,8 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
-from . import db, github_actions, kpis, parser_cmv, parser_nfe, relatorios, sync_core
+from . import (db, github_actions, kpis, parser_cmv, parser_compras_sgi, parser_nfe,
+               produtos_defensivos_sgi, relatorios, sync_core)
 from .compat import LARG
 from .importacao import validar_planilha
 from .ui_util import ROTULO_SITUACAO, brl, estilo_situacao, num, para_excel, pct, vazio
@@ -883,6 +884,90 @@ def pagina_negativados() -> None:
                 st.caption(f"Dias: {dias_fmt}")
 
 
+# --------------------------------------------------------------- entradas por compra (SGI)
+def pagina_entradas_compras() -> None:
+    st.header("Entradas por compra (SGI)")
+    st.caption("Relatório 'Relação de Custo de Compras' do SGI desktop (Relatórios > Compras), "
+                "sempre pela empresa PORTEIRA (compra para as duas lojas). Um robô local busca isso "
+                "sozinho todo dia; aqui dá pra conferir o que já entrou e aplicar manualmente se precisar.")
+
+    feitos = db.dias_sincronizados_compras("Porteira")
+    ultimo = max(feitos) if feitos else None
+    c1, c2 = st.columns(2)
+    c1.metric("Último dia sincronizado pelo robô", f"{ultimo:%d/%m/%Y}" if ultimo else "nunca")
+    pendentes = sync_core.dias_a_sincronizar(DATA_INICIAL_SYNC, hoje_brasil(), feitos, janela=0)
+    c2.metric("Dias pendentes", len(pendentes))
+
+    st.subheader("Produtos do grupo Defensivos sem cadastro aqui")
+    st.caption("Compara a lista mestra de produtos do SGI (passada manualmente) com o que está cadastrado — "
+                "pega o caso de um produto existir no SGI e nunca ter sido cadastrado aqui.")
+    saldos_todos = db.listar_saldos(apenas_ativos=False)
+    cods_cadastrados = set(saldos_todos["cod_produto"])
+    faltando = produtos_defensivos_sgi.produtos_faltando(cods_cadastrados)
+    if faltando.empty:
+        st.success("Todos os produtos da lista mestra já estão cadastrados.")
+    else:
+        st.error(f"{len(faltando)} produto(s) da lista mestra sem cadastro:")
+        st.dataframe(faltando, hide_index=True, **LARG,
+                     column_config={"cod_produto": "Código", "descricao_sgi": "Produto (SGI)"})
+
+    st.subheader("Conferir e aplicar manualmente (upload do .xls)")
+    st.caption("No SGI: Relatórios > Compras > Relação de Custo de Compras, período = o MESMO dia na Data "
+                "Inicial e Final (um relatório por dia, como as vendas), botão 'Gerar Arq.' → Excel (.xls).")
+    dia = st.date_input("Dia desse relatório", value=hoje_brasil(), format="DD/MM/YYYY", key="cp_dia")
+    arq = st.file_uploader("Arquivo .xls", type=["xls"], key="cp_upload")
+    if arq is not None:
+        chave = (arq.name, arq.size, dia)
+        if st.session_state.get("cp_chave") != chave:
+            st.session_state["cp_rel"] = parser_compras_sgi.extrair_compras(arq.getvalue())
+            st.session_state["cp_chave"] = chave
+        rel = st.session_state["cp_rel"]
+        if rel.aviso:
+            st.warning(rel.aviso)
+        if rel.itens:
+            df = pd.DataFrame([{
+                "cod_produto": i.cod_produto, "descricao": i.descricao,
+                "qtd_total": i.qtd_total, "compra_total": i.compra_total,
+                "cadastrado": i.cod_produto in cods_cadastrados,
+            } for i in rel.itens])
+            sem_cadastro = df[~df["cadastrado"]]
+            if not sem_cadastro.empty:
+                st.error(f"{len(sem_cadastro)} produto(s) do relatório SEM cadastro — NÃO serão aplicados "
+                         f"(cadastre primeiro e suba o arquivo de novo):")
+                st.dataframe(sem_cadastro[["cod_produto", "descricao", "qtd_total"]], hide_index=True, **LARG)
+
+            aplicaveis = df[df["cadastrado"]]
+            st.dataframe(aplicaveis[["cod_produto", "descricao", "qtd_total", "compra_total"]], hide_index=True,
+                         **LARG, column_config={
+                             "cod_produto": "Código", "descricao": "Produto",
+                             "qtd_total": st.column_config.NumberColumn("Qtd. entrada", format="%.0f"),
+                             "compra_total": st.column_config.NumberColumn("Valor", format="R$ %.2f"),
+                         })
+            if not aplicaveis.empty and st.button("Aplicar entradas desse dia", type="primary", key="cp_aplicar"):
+                linhas = [{"cod_produto": r.cod_produto, "descricao": r.descricao,
+                           "quantidade_entrada": r.qtd_total, "valor_entrada": r.compra_total}
+                          for r in rel.itens if r.cod_produto in cods_cadastrados]
+                res = db.substituir_movimentacao_entrada_dia("Porteira", dia, linhas)
+                st.success(f"{res['gravados']} produto(s) gravado(s) para {dia:%d/%m/%Y} "
+                           f"({res['removidos']} removido(s), se já existia e mudou).")
+                limpar_cache()
+                st.rerun()
+
+    st.subheader("Histórico de entradas por compra")
+    f1, f2 = st.columns(2)
+    ini_h = f1.date_input("De", value=DATA_INICIAL_SYNC, format="DD/MM/YYYY", key="cp_hist_ini")
+    fim_h = f2.date_input("Até", value=hoje_brasil(), format="DD/MM/YYYY", key="cp_hist_fim")
+    hist = db.listar_movimentacao_entrada_compra(ini=ini_h, fim=fim_h)
+    if hist.empty:
+        st.info("Nenhuma entrada por compra registrada no período.")
+    else:
+        st.dataframe(hist, hide_index=True, **LARG, column_config={
+            "cod_produto": "Código", "data": "Data", "loja": "Loja", "descricao_sgi": "Produto",
+            "quantidade_entrada": st.column_config.NumberColumn("Qtd.", format="%.0f"),
+            "valor_entrada": st.column_config.NumberColumn("Valor", format="R$ %.2f"),
+        })
+
+
 # ------------------------------------------------------------------------- não encontrados
 def pagina_nao_encontrados() -> None:
     st.header("Vendidos no SGI sem cadastro aqui")
@@ -1062,6 +1147,7 @@ PAGINAS = {
     "Histórico de saídas": pagina_historico,
     "Vendas e zerados": pagina_vendas_zerados,
     "Negativados": pagina_negativados,
+    "Entradas por compra (SGI)": pagina_entradas_compras,
     "Não encontrados": pagina_nao_encontrados,
     "Importar base": pagina_importar,
     "PDFs importados": pagina_pdfs,
