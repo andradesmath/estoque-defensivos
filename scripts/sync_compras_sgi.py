@@ -39,7 +39,6 @@ Uso (sempre em D:\\SGI, com o SGI aberto e logado e a janela do relatorio aberta
 from __future__ import annotations
 
 import argparse
-import ctypes
 import os
 import sys
 import time
@@ -55,7 +54,7 @@ try:
 except ImportError:
     pass
 
-from pywinauto import Application  # noqa: E402
+from pywinauto import Application, Desktop  # noqa: E402
 from pywinauto.findwindows import ElementNotFoundError  # noqa: E402
 from pywinauto.timings import TimeoutError as PywinautoTimeoutError  # noqa: E402
 
@@ -90,42 +89,44 @@ def _conectar_app():
     return Application(backend="win32").connect(title_re=TITULO_PRINCIPAL + ".*", timeout=5)
 
 
-_CB_GETCOUNT = 0x0146
-_CB_GETLBTEXT = 0x0148
-_CB_GETLBTEXTLEN = 0x0149
-_CB_SETCURSEL = 0x014E
-
-
 def _definir_empresa(campo, texto: str) -> None:
-    """Testado ao vivo em 09/10/2026: .select() do pywinauto (ComboBoxWrapper) nao
-    funciona nesse combo (classe do controle nao e reconhecida como ComboBox padrao) e
-    digitar texto nao cola (e DROPDOWNLIST - sem parte editavel, nao aceita WM_CHAR).
-    Em vez de adivinhar por teclado/mouse, fala direto com o controle via mensagens
-    nativas de combobox do Windows (CB_GETLBTEXT/CB_SETCURSEL) no handle (`hwnd`) -
-    funcionam em qualquer ComboBox real do Win32, seja qual for o nome de classe que o
-    framework (Delphi/VCL) deu a ele. Lista os itens pra achar o indice exato (comparacao
-    sem distinguir maiusculas/espaco nas pontas) e seleciona por indice."""
-    hwnd = campo.handle
-    user32 = ctypes.windll.user32
-    n = user32.SendMessageW(hwnd, _CB_GETCOUNT, 0, 0)
-    alvo = texto.strip().upper()
-    indice = None
-    itens = []
-    for i in range(n):
-        tam = user32.SendMessageW(hwnd, _CB_GETLBTEXTLEN, i, 0)
-        buf = ctypes.create_unicode_buffer(tam + 1)
-        user32.SendMessageW(hwnd, _CB_GETLBTEXT, i, buf)
-        itens.append(buf.value)
-        if buf.value.strip().upper() == alvo:
-            indice = i
-    if indice is None:
-        raise RoboIndisponivel(f"Empresa {texto!r} nao esta na lista do combo (itens vistos: {itens}).")
-    user32.SendMessageW(hwnd, _CB_SETCURSEL, indice, 0)
+    """Confirmado via print_control_identifiers() em 09/10/2026: Empresa e um
+    TDBLookupComboBox (combo ligado a um dataset), NAO um TComboBox nativo - por isso
+    nem .select() nem as mensagens CB_* (CB_GETCOUNT voltou vazio) funcionam nele. O
+    dropdown dele abre como uma janela popup separada (visto ao vivo via computer-use -
+    clicar no combo mostrou uma lista normal com os 5 itens) - clica na seta do combo
+    (canto direito, onde fica o botao dropdown) e clica no item certo dentro do popup
+    que aparece."""
+    antes = {w.handle for w in Desktop(backend="win32").windows()}
+    rect = campo.rectangle()
+    campo.click_input(coords=(rect.width() - 10, rect.height() // 2))
+    time.sleep(0.3)
+    novas = [w for w in Desktop(backend="win32").windows() if w.handle not in antes]
+    if not novas:
+        raise RoboIndisponivel("Cliquei na seta do combo Empresa mas nenhum popup novo apareceu.")
+
+    achou = None
+    for popup in novas:
+        for ctrl in [popup] + popup.descendants():
+            try:
+                if texto in (ctrl.window_text() or ""):
+                    achou = ctrl
+                    break
+            except Exception:  # noqa: BLE001 - alguns descendants nao dao pra ler texto
+                continue
+        if achou:
+            break
+    if achou is None:
+        raise RoboIndisponivel(
+            f"Popup do combo Empresa abriu mas nao achei o item {texto!r} nele "
+            f"(janelas novas: {[(w.class_name(), w.window_text()) for w in novas]})."
+        )
+    achou.click_input()
+    time.sleep(0.3)
+
     atual = campo.window_text()
     if texto not in atual:
-        raise RoboIndisponivel(
-            f"Campo Empresa ficou {atual!r} depois de selecionar {texto!r} (indice {indice})."
-        )
+        raise RoboIndisponivel(f"Campo Empresa ficou {atual!r} depois de clicar em {texto!r} no popup.")
 
 
 def _logar_sgi() -> None:
