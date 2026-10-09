@@ -67,6 +67,11 @@ CLASSE_RELATORIO = "TF_REL_CUSTO_DE_COMPRAS"
 PASTA_EXPORT = Path(os.environ.get("SYNC_COMPRAS_PASTA", r"D:\SGI\export_compras"))
 LOJA = "Porteira"  # so Porteira compra; o saldo e compartilhado entre as lojas (ver schema.sql)
 SGI_EXE = Path(os.environ.get("SGI_EXE_PATH", r"D:\SGI\SGI.exe"))
+# Abrir o atalho (nao o SGI.exe cru): o .lnk carrega com o "Iniciar em" apontando pra
+# D:\SGI, onde ficam recursos com caminho relativo (ex. fundo.jpg) - rodar o .exe
+# direto sem esse diretorio de trabalho certo deu erro "Cannot open file fundo.jpg"
+# (confirmado 09/10/2026).
+SGI_ATALHO = Path(os.environ.get("SGI_ATALHO_PATH", r"C:\Users\Admin\Desktop\SGI - Atalho.lnk"))
 
 
 class RoboIndisponivel(Exception):
@@ -88,16 +93,22 @@ def _logar_sgi() -> None:
             "SGI nao esta aberto e SGI_LOGIN/SGI_SENHA nao estao no .env - "
             "nao da pra logar sozinho. Abra e logue manualmente."
         )
-    if not SGI_EXE.exists():
-        raise RoboIndisponivel(f"SGI.exe nao encontrado em {SGI_EXE} (ajuste SGI_EXE_PATH no .env).")
+    if not SGI_ATALHO.exists():
+        raise RoboIndisponivel(
+            f"Atalho do SGI nao encontrado em {SGI_ATALHO} (ajuste SGI_ATALHO_PATH no .env)."
+        )
 
-    Application(backend="win32").start(str(SGI_EXE))
+    # os.startfile (nao Application.start, que so sabe rodar um .exe direto sem
+    # resolver o atalho): abre como um duplo-clique no .lnk, com o diretorio de
+    # trabalho certo.
+    os.startfile(str(SGI_ATALHO))
     try:
         app = Application(backend="win32").connect(title_re=TITULO_PRINCIPAL + ".*", timeout=40)
     except (ElementNotFoundError, PywinautoTimeoutError):
         raise RoboIndisponivel(
-            "SGI.exe abriu mas a janela principal nao apareceu em 40s - tela de login "
-            "pode ter um layout diferente do esperado (nao testado ainda nesta versao)."
+            "SGI abriu (via atalho) mas a janela principal nao apareceu em 40s - tela de "
+            "login pode ter um layout diferente do esperado, ou algum dialogo (ex. erro) "
+            "ficou aberto bloqueando. Confira a tela."
         )
     # Login nao testado ao vivo ainda (SGI ja estava aberto/logado quando o menu foi
     # inspecionado em 09/10/2026) - se a tela de login tiver campos/botao diferentes
