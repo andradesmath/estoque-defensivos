@@ -207,20 +207,13 @@ def _definir_empresa(campo, texto: str) -> None:
 
 
 def _logar_sgi() -> None:
-    """Abre o SGI.exe e faz login sozinho (SGI_LOGIN + SGI_SENHA_DESKTOP do .env). So
-    roda quando o SGI nao estava aberto - NUNCA mata/reinicia uma sessao ja logada.
+    """Abre o SGI pelo atalho e loga (SGI_LOGIN + SGI_SENHA_DESKTOP do .env). So roda
+    quando o SGI nao estava aberto - NUNCA mata/reinicia uma sessao ja logada.
 
     SGI_SENHA_DESKTOP (nao SGI_SENHA): a senha do app desktop e DIFERENTE da senha do
     portal web (confirmado pelo usuario em 09/10/2026) - SGI_SENHA e usada por
     scripts/sync_sgi.py (robo de vendas via portal web, GitHub Actions) e nao deve ser
     sobrescrita por essa senha diferente."""
-    usuario = os.environ.get("SGI_LOGIN")
-    senha = os.environ.get("SGI_SENHA_DESKTOP")
-    if not usuario or not senha:
-        raise RoboIndisponivel(
-            "SGI nao esta aberto e SGI_LOGIN/SGI_SENHA_DESKTOP nao estao no .env - "
-            "nao da pra logar sozinho. Abra e logue manualmente."
-        )
     if not SGI_ATALHO.exists():
         raise RoboIndisponivel(
             f"Atalho do SGI nao encontrado em {SGI_ATALHO} (ajuste SGI_ATALHO_PATH no .env)."
@@ -237,6 +230,23 @@ def _logar_sgi() -> None:
             "SGI abriu (via atalho) mas a janela principal nao apareceu em 40s - tela de "
             "login pode ter um layout diferente do esperado, ou algum dialogo (ex. erro) "
             "ficou aberto bloqueando. Confira a tela."
+        )
+    _preencher_login(app)
+
+
+def _preencher_login(app) -> None:
+    """Preenche e confirma a tela "Senha..." que ja esta aberta. Separado de
+    _logar_sgi porque essa tela aparece em dois momentos: quando o robo abre o SGI do
+    zero, e quando o SGI ja esta aberto mas deslogado (alguem clicou em Logoff) - nesse
+    segundo caso a janela principal existe e enganava o robo, que seguia como se a
+    sessao fosse valida e lia a empresa da sessao ANTERIOR na faixa do rodape (a faixa
+    nao se atualiza no logoff) - visto em 09/10/2026."""
+    usuario = os.environ.get("SGI_LOGIN")
+    senha = os.environ.get("SGI_SENHA_DESKTOP")
+    if not usuario or not senha:
+        raise RoboIndisponivel(
+            "SGI precisa de login e SGI_LOGIN/SGI_SENHA_DESKTOP nao estao no .env - "
+            "nao da pra logar sozinho. Logue manualmente."
         )
     # A tela de login ("Senha...") e uma janela PROPRIA (dialogo top-level do mesmo
     # processo), NAO campos dentro da janela principal - confirmado ao vivo em
@@ -348,6 +358,15 @@ def conectar_relatorio():
             app = _conectar_app()
         except (ElementNotFoundError, PywinautoTimeoutError) as e:
             raise RoboIndisponivel("SGI nao abriu/logou a tempo.") from e
+
+    # SGI aberto mas DESLOGADO (alguem clicou em Logoff, ou abriu e nao entrou): a
+    # janela principal existe e a faixa do rodape ainda mostra a empresa da sessao
+    # anterior, entao sem isto o robo seguia como se a sessao fosse valida e lia a
+    # empresa errada (visto em 09/10/2026 - parou achando que estava em CASA DE ADUBO
+    # quando na verdade nao estava logado em nada).
+    login = app.window(title=TITULO_LOGIN)
+    if login.exists():
+        _preencher_login(app)
 
     main = app.window(title_re=TITULO_PRINCIPAL + ".*")
 
