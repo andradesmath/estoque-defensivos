@@ -388,14 +388,27 @@ def _definir_data(campo, dia: date, tentativas: int = 3) -> None:
     trocou o segmento do dia). Confere lendo de volta - a unica forma de saber se
     realmente pegou, sem alguem olhando a tela."""
     esperado = dia.strftime("%d/%m/%Y")
+    texto = ""
     for tentativa in range(1, tentativas + 1):
         campo.set_focus()
         campo.type_keys("{HOME}")
-        campo.type_keys(f"{dia:%d}")
-        campo.type_keys("{RIGHT}")
-        campo.type_keys(f"{dia:%m}")
-        campo.type_keys("{RIGHT}")
-        campo.type_keys(f"{dia:%Y}")
+        if tentativa == 2:
+            # Estrategia alternativa: digita os 8 digitos corridos, deixando o proprio
+            # campo avancar de segmento. Repetir a MESMA estrategia 3x nao adianta
+            # (03/10/2026 saiu '03/10/2010' nas 3 tentativas iguais) - variar o jeito
+            # de digitar e o que de fato muda o resultado.
+            campo.type_keys(f"{dia:%d%m%Y}")
+        else:
+            # Tentativas 1 e 3: segmento a segmento com {RIGHT} explicito (nao confia no
+            # auto-avanco, que ja trocou digitos antes). Na 3a, com pausa entre segmentos.
+            pausa = 0.15 if tentativa == 3 else 0.0
+            campo.type_keys(f"{dia:%d}")
+            time.sleep(pausa)
+            campo.type_keys("{RIGHT}")
+            campo.type_keys(f"{dia:%m}")
+            time.sleep(pausa)
+            campo.type_keys("{RIGHT}")
+            campo.type_keys(f"{dia:%Y}")
         time.sleep(0.3)
         texto = campo.window_text()
         if esperado in texto:
