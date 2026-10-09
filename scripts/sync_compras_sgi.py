@@ -504,7 +504,14 @@ def _exportar_xls(app, rep, dia: date) -> Path:
     PASTA_EXPORT.mkdir(parents=True, exist_ok=True)
     destino = PASTA_EXPORT / f"compras_{dia:%Y%m%d}.xls"
     if destino.exists():
-        destino.unlink()  # evita o popup de "sobrescrever?" no Explorer
+        try:
+            destino.unlink()  # evita o popup de "sobrescrever?" no Explorer
+        except OSError:
+            # Arquivo travado por outro processo (Excel aberto nele, antivirus,
+            # indexador do Windows) - em 09/10/2026 isso derrubou o dia 22/09 inteiro
+            # com "Permission denied". Exportar com outro nome resolve o dia; o arquivo
+            # velho fica pra tras, sem atrapalhar (o que importa e o .xls recem-gerado).
+            destino = PASTA_EXPORT / f"compras_{dia:%Y%m%d}_{int(time.time())}.xls"
 
     rep.child_window(title="&Gerar Arq.", class_name="TBitBtn").click()
     dlg = app.window(title_re="Exportar Dados.*")
