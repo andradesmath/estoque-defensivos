@@ -39,6 +39,7 @@ Uso (sempre em D:\\SGI, com o SGI aberto e logado e a janela do relatorio aberta
 from __future__ import annotations
 
 import argparse
+import ctypes
 import os
 import sys
 import time
@@ -47,6 +48,21 @@ from pathlib import Path
 
 RAIZ_PROJETO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, RAIZ_PROJETO)
+
+# Sem isto, se o Windows estiver com escala de tela > 100% (comum em notebook), o
+# Python 32-bit (processo nao "DPI-aware") enxerga coordenadas de tela numa escala
+# diferente da real - cliques sinteticos do pywinauto (click_input) calculados a partir
+# de rectangle() ficam levemente errados, acertando ou errando o alvo de forma
+# inconsistente entre execucoes (foi exatamente o sintoma visto em 09/10/2026 testando
+# o combo Empresa: as mesmas coordenadas abriam o dropdown numa execucao e nao noutra).
+# Precisa rodar ANTES de qualquer janela ser tocada pelo pywinauto.
+try:
+    ctypes.windll.shcore.SetProcessDpiAwareness(1)  # PROCESS_SYSTEM_DPI_AWARE
+except Exception:  # noqa: BLE001 - Windows antigo sem shcore, ou ja setado - nao impede seguir
+    try:
+        ctypes.windll.user32.SetProcessDPIAware()
+    except Exception:  # noqa: BLE001
+        pass
 
 try:
     from dotenv import load_dotenv
