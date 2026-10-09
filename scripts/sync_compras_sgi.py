@@ -71,7 +71,10 @@ class RoboIndisponivel(Exception):
 
 def conectar_relatorio():
     """Conecta na janela principal do SGI e reaproveita a janela do relatorio, que deve
-    estar aberta (ver pre-requisito manual no topo do arquivo)."""
+    estar aberta (ver pre-requisito manual no topo do arquivo). Devolve (app, rep):
+    `app` fica pra achar outras janelas de nivel superior depois (ex.: o dialogo
+    "Exportar Dados") - um wrapper ja resolvido (`rep.top_level_parent()`) nao serve
+    pra isso, so uma WindowSpecification (app.window(...)) tem .child_window()."""
     try:
         app = Application(backend="win32").connect(title_re=TITULO_PRINCIPAL + ".*", timeout=5)
     except ElementNotFoundError as e:
@@ -86,7 +89,7 @@ def conectar_relatorio():
             "Relatorios > Compras > Relacao de Custo de Compras e deixe aberta (pode minimizar)."
         )
     rep.restore()  # garante que da pra interagir mesmo se estava minimizada
-    return rep
+    return app, rep
 
 
 def _campos_data(rep):
@@ -121,14 +124,14 @@ def _definir_data(campo, dia: date, tentativas: int = 3) -> None:
     raise RoboIndisponivel(f"Campo de data ficou {texto!r} depois de {tentativas} tentativa(s), esperado {esperado}.")
 
 
-def _exportar_xls(rep, dia: date) -> Path:
+def _exportar_xls(app, rep, dia: date) -> Path:
     PASTA_EXPORT.mkdir(parents=True, exist_ok=True)
     destino = PASTA_EXPORT / f"compras_{dia:%Y%m%d}.xls"
     if destino.exists():
         destino.unlink()  # evita o popup de "sobrescrever?" no Explorer
 
     rep.child_window(title="&Gerar Arq.", class_name="TBitBtn").click()
-    dlg = rep.top_level_parent().child_window(title_re="Exportar Dados.*")
+    dlg = app.window(title_re="Exportar Dados.*")
     dlg.wait("visible", timeout=10)
     dlg.child_window(class_name="Edit", found_index=0).set_edit_text(str(destino))
     dlg.child_window(title="Salvar", class_name="Button").click()
@@ -140,14 +143,14 @@ def _exportar_xls(rep, dia: date) -> Path:
     raise RoboIndisponivel(f"Arquivo {destino} nao apareceu apos clicar em Gerar Arq.")
 
 
-def processar_dia(rep, dia: date, gravar, dry_run: bool) -> dict:
+def processar_dia(app, rep, dia: date, gravar, dry_run: bool) -> dict:
     dtp_ini, dtp_fim = _campos_data(rep)
     _definir_data(dtp_ini, dia)
     _definir_data(dtp_fim, dia)
     rep.child_window(title="&Buscar  ", class_name="TBitBtn").click()
     time.sleep(1.0)  # consulta no banco remoto (138.255.35.101) - da um tempo antes de exportar
 
-    arq = _exportar_xls(rep, dia)
+    arq = _exportar_xls(app, rep, dia)
     rel = parser_compras_sgi.extrair_compras(arq.read_bytes())
     if rel.aviso and not rel.itens:
         print(f"  [{dia:%d/%m/%Y}] aviso: {rel.aviso}")
@@ -191,7 +194,7 @@ def main(argv=None) -> int:
         return 0
 
     try:
-        rep = conectar_relatorio()
+        app, rep = conectar_relatorio()
     except RoboIndisponivel as e:
         print(f"ERRO: {e}")
         return 1
@@ -207,7 +210,7 @@ def main(argv=None) -> int:
     erros = []
     for dia in dias:
         try:
-            processar_dia(rep, dia, gravar, args.dry_run)
+            processar_dia(app, rep, dia, gravar, args.dry_run)
         except Exception as e:  # noqa: BLE001 - um dia ruim nao pode travar os outros
             erros.append(f"{dia:%d/%m/%Y}: {e}")
             print(f"  [{dia:%d/%m/%Y}] ERRO: {e}")
