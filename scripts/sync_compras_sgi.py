@@ -118,20 +118,31 @@ def _definir_empresa(campo, texto: str) -> None:
         )
     indice = indices[0]
 
-    antes = {w.handle for w in Desktop(backend="win32").windows()}
+    # Garante que a janela de login esta em primeiro plano antes de clicar - um clique
+    # sintetico (click_input/SendInput) pode nao abrir o dropdown se o dialogo pai nao
+    # estiver ativo (visto ao vivo: 1a tentativa com retry de tempo ainda falhou, sinal
+    # de que nao era so timing).
+    try:
+        campo.top_level_parent().set_focus()
+    except Exception:  # noqa: BLE001 - foco e so uma ajuda, nao impede a tentativa
+        pass
+    time.sleep(0.2)
+
     rect = campo.rectangle()
-    campo.click_input(coords=(rect.width() - 10, rect.height() // 2))
-    # Polling em vez de 1 sleep fixo - a 1a tentativa (0.3s fixo) foi suficiente numa
-    # execucao e insuficiente noutra (maquina mais carregada) - da mais folego sem
-    # deixar o caminho rapido mais lento do que precisa.
     novas = []
-    for _ in range(10):
-        time.sleep(0.2)
-        novas = [w for w in Desktop(backend="win32").windows() if w.handle not in antes]
+    for tentativa in range(3):
+        antes = {w.handle for w in Desktop(backend="win32").windows()}
+        campo.click_input(coords=(rect.width() - 10, rect.height() // 2))
+        # Polling em vez de 1 sleep fixo - dar folego pro popup renderizar.
+        for _ in range(10):
+            time.sleep(0.2)
+            novas = [w for w in Desktop(backend="win32").windows() if w.handle not in antes]
+            if novas:
+                break
         if novas:
             break
     if not novas:
-        raise RoboIndisponivel("Cliquei na seta do combo Empresa mas nenhum popup novo apareceu em 2s.")
+        raise RoboIndisponivel("Cliquei na seta do combo Empresa 3x mas nenhum popup novo apareceu.")
     popup = novas[0]
 
     prect = popup.rectangle()
