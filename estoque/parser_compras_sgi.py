@@ -19,6 +19,7 @@ Colunas confirmadas no arquivo real (período 01-07/10/2026, Grupo=DEFENSIVOS):
 """
 from __future__ import annotations
 
+import io
 from dataclasses import dataclass, field
 
 import xlrd
@@ -58,7 +59,15 @@ def _numero(valor) -> float:
 
 def extrair_compras(xls_bytes: bytes) -> RelatorioCompras:
     try:
-        livro = xlrd.open_workbook(file_contents=xls_bytes)
+        # logfile= silencia o "WARNING *** file size (3884) not 512 + multiple of sector
+        # size (512)" que o xlrd imprime em TODO arquivo do SGI. O xlrd escreve isso
+        # direto no logfile (sys.stdout por padrão), não via warnings - então não dá pra
+        # filtrar com warnings.filterwarnings. O aviso é legítimo e inofensivo: o SGI
+        # grava .xls sem completar o último setor. Fica no vazio pra não poluir a saída
+        # do robô, onde ele aparecia uma vez por dia sincronizado e dava impressão de
+        # erro. Se o arquivo estiver REALMENTE corrompido, open_workbook levanta
+        # exceção, que é tratada logo abaixo - o aviso nunca foi o sinal de problema.
+        livro = xlrd.open_workbook(file_contents=xls_bytes, logfile=io.StringIO())
         planilha = livro.sheet_by_index(0)
     except Exception as e:  # noqa: BLE001
         return RelatorioCompras(itens=[], aviso=f"Não consegui ler o arquivo como Excel: {e}")

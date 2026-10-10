@@ -163,6 +163,23 @@ CREATE TABLE IF NOT EXISTS sync_execucoes (
     status         VARCHAR(20) NOT NULL DEFAULT 'rodando',
     resumo         TEXT
 );
+-- Colunas acrescentadas depois, para os robôs do SGI desktop (compras e
+-- transferências), em ALTER e não dentro do CREATE acima: a tabela já existe em
+-- produção, e `CREATE TABLE IF NOT EXISTS` não altera tabela existente - mudar só o
+-- CREATE deixaria o banco antigo sem as colunas e os robôs quebrando no INSERT.
+--
+-- `periodo_fim` não é só informativo: é o ponto de partida do robô de TRANSFERÊNCIAS.
+-- Ele grava por período (apaga o intervalo e regrava), então a próxima execução começa
+-- no maior `periodo_fim` com status 'ok' menos a janela de dias recentes. Antes disso o
+-- critério era a data da última transferência gravada, que não avançava em semana
+-- parada e fazia a consulta no SGI crescer sem motivo. Compras não usa isto para
+-- decidir o que buscar - lá sync_dias_compras é dia a dia, mais preciso -, só registra.
+ALTER TABLE sync_execucoes ADD COLUMN IF NOT EXISTS periodo_inicio DATE;
+ALTER TABLE sync_execucoes ADD COLUMN IF NOT EXISTS periodo_fim    DATE;
+ALTER TABLE sync_execucoes ADD COLUMN IF NOT EXISTS dias           INTEGER;
+ALTER TABLE sync_execucoes ADD COLUMN IF NOT EXISTS linhas         INTEGER;
+CREATE INDEX IF NOT EXISTS ix_sync_execucoes_origem
+    ON sync_execucoes (origem, iniciado_em DESC);
 
 CREATE OR REPLACE VIEW v_saldo_produto AS
 SELECT

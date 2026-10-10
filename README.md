@@ -168,8 +168,11 @@ py -3.11-32 scripts\sync_transferencias_sgi.py --dry-run    # mostra o que entra
 py -3.11-32 scripts\sync_transferencias_sgi.py              # grava
 ```
 
-Sem `--desde`, começa na última transferência já gravada (menos `--janela`, padrão 3 dias) e
-vai até hoje — por isso esse robô não precisa de tabela de controle.
+Sem `--desde`, começa no **fim da última execução bem-sucedida** menos `--janela` (padrão 3
+dias) e vai até hoje. O marco vem de `sync_execucoes` (histórico), e não da data da última
+transferência gravada: em semana sem transferência nenhuma aquela data não avançava e a
+consulta no SGI crescia sem motivo. Período sem nada também é registrado — é o que faz o
+marco avançar.
 
 **Contagem em dobro, aqui, é o caso esperado no começo**: essas saídas eram lançadas à mão
 como ajuste no painel. O robô imprime `!! ATENCAO` quando acha ajuste negativo no mesmo
@@ -183,15 +186,22 @@ robôs em sequência** (compras, depois transferências) e guarda a saída em
 `logs/sgi_AAAA-MM-DD.log`. Em sequência de propósito — os dois dirigem a mesma janela do SGI
 por cliques reais, então em paralelo roubariam o foco um do outro.
 
-Não leva data: compras consulta `sync_dias_compras` e transferências olha a última data
-gravada — **os dias em que o notebook ficou desligado entram no próximo logon**.
+**Uma vez por dia, não a cada logon.** O gatilho do Agendador é "ao fazer logon" e dispara em
+*todo* logon; não existe gatilho nativo "primeiro logon do dia". E os robôs **não** são no-op
+nas execuções seguintes (compras rebusca a janela de dias recentes, transferências reconsulta
+o período), então sem trava cada logon abriria o SGI e tomaria o foco por 1-2 minutos. O
+`.bat` guarda em `logs/ultimo_dia.txt` o dia da última execução **bem-sucedida** e sai na hora
+se já rodou hoje. Falhou, não marca — o próximo logon tenta de novo.
 
-Criar a tarefa (PowerShell **como administrador**, uma vez só):
+Não leva data: compras consulta `sync_dias_compras` e transferências parte do fim da última
+execução bem-sucedida — **os dias em que o notebook ficou desligado entram no próximo
+logon**.
+
+Criar a tarefa (PowerShell **como administrador**, uma vez só). Em **uma linha só** — o
+`^` de quebra de linha é do CMD e o PowerShell o rejeita (no PowerShell seria crase):
 
 ```powershell
-schtasks /create /tn "Estoque - SGI (logon)" ^
-  /tr "C:\Users\Admin\Documents\estoque-defensivos\estoque-defensivos\scripts\sync_sgi_logon.bat" ^
-  /sc onlogon /delay 0002:00 /rl highest /f
+schtasks /create /tn "Estoque - SGI (logon)" /tr "C:\Users\Admin\Documents\estoque-defensivos\estoque-defensivos\scripts\sync_sgi_logon.bat" /sc onlogon /delay 0002:00 /rl highest /f
 ```
 
 `/delay 0002:00` espera 2 minutos após o logon (dá tempo de a rede subir). Para conferir,
@@ -203,8 +213,46 @@ schtasks /run   /tn "Estoque - SGI (logon)"
 schtasks /delete /tn "Estoque - SGI (logon)" /f
 ```
 
-A tarefa dispara em **todo** logon; como os robôs só buscam o que falta, nos logons seguintes
-do mesmo dia não têm o que fazer e saem rápido.
+#### Ícone na área de trabalho (rodar na hora)
+
+`sync_sgi_logon.bat agora` roda os dois robôs **ignorando a trava do dia** e mostra a saída na
+tela (a versão agendada escreve só no log). Criar o atalho — PowerShell normal, não precisa de
+administrador:
+
+Na Área de Trabalho já existe **`Sincronizar Estoque SGI.bat`**, que é só uma chamada a
+`sync_sgi_logon.bat agora` — a lógica inteira mora num arquivo só, o mesmo que a tarefa
+agendada usa. Para refazer o ícone, ou trocá-lo por um `.lnk` com ícone de verdade:
+
+```powershell
+$P = "C:\Users\Admin\Documents\estoque-defensivos\estoque-defensivos"
+$s = (New-Object -ComObject WScript.Shell).CreateShortcut("$env:USERPROFILE\Desktop\Atualizar estoque (SGI).lnk")
+$s.TargetPath = "$P\scripts\sync_sgi_logon.bat"
+$s.Arguments = "agora"
+$s.WorkingDirectory = $P
+$s.IconLocation = "shell32.dll,46"
+$s.Save()
+```
+
+Clicar no ícone abre uma janela preta com o andamento e espera uma tecla no fim, para dar
+tempo de ler o resultado. **Não use o computador enquanto roda**: a automação depende de
+cliques reais na janela do SGI.
+
+#### Histórico de execuções
+
+Toda execução dos robôs é registrada em `sync_execucoes` — a mesma tabela do sync de vendas,
+então aparece no painel em *Vendas e zerados → Últimas execuções*, com período coberto, dias
+e linhas. Responde "o robô rodou hoje?" sem abrir log. Pela linha de comando:
+
+```bash
+py -3.11-32 scripts\sync_transferencias_sgi.py --historico         # só os robôs do SGI
+py -3.11-32 scripts\sync_transferencias_sgi.py --historico --tudo  # + sync de vendas
+```
+
+O filtro padrão existe porque o sync de vendas grava na mesma tabela e roda 2× por dia pelo
+GitHub Actions — sem ele, a lista inteira é de vendas.
+
+Para transferências esse registro não é só auditoria: o `periodo_fim` da última execução
+`ok` é o ponto de partida da próxima.
 
 ## Testes
 

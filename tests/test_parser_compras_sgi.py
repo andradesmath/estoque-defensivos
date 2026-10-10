@@ -54,3 +54,37 @@ def test_sem_itens_com_quantidade_gera_aviso():
     rel = extrair_compras(dados)
     assert rel.itens == []
     assert rel.aviso == "Nenhum item com quantidade encontrado no período/filtro."
+
+
+def test_passa_logfile_proprio_pro_xlrd(monkeypatch):
+    """O SGI grava .xls sem completar o ultimo setor, e o xlrd imprime
+    'WARNING *** file size (3884) not 512 + multiple of sector size (512)' em TODO
+    arquivo do robo - uma vez por dia sincronizado, dando impressao de erro no log.
+
+    O xlrd escreve isso no `logfile` (default sys.stdout, avaliado no import), nao via
+    warnings: nem warnings.filterwarnings nem redirect_stdout resolvem, so passar
+    logfile=. Por isso este teste olha o CONTRATO da chamada: capsys e capfd nao
+    enxergam esse texto (o default do parametro ja aponta pro stdout que o pytest
+    instalou antes do import), e um teste que olhasse a saida passaria mesmo sem o
+    conserto - foi o que aconteceu ao escrever este."""
+    import io as _io
+
+    import xlrd as _xlrd
+
+    from estoque import parser_compras_sgi as pc
+
+    vistos = {}
+    original = _xlrd.open_workbook
+
+    def espiao(*a, **kw):
+        vistos.update(kw)
+        return original(*a, **kw)
+
+    monkeypatch.setattr(pc.xlrd, "open_workbook", espiao)
+    xls = _xls(_COLUNAS, [["01582", "DECIS EC250ML", 240.0, 0, 10.0, 0, 0, 24.0]])
+    rel = pc.extrair_compras(xls + b"\x00" * 7)  # bytes sobrando = o que dispara o aviso
+
+    assert len(rel.itens) == 1, "o parser tem que continuar lendo o arquivo normalmente"
+    assert isinstance(vistos.get("logfile"), _io.StringIO), (
+        "extrair_compras precisa passar logfile= proprio pro xlrd, senao o WARNING vai "
+        "pro stdout do robo")

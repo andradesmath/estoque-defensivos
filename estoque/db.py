@@ -18,11 +18,15 @@ from pathlib import Path
 
 try:
     import pandas as pd
-except ImportError:  # scripts/sync_compras_sgi.py roda em Python 32-bit onde pandas
-    # não tem build pronta (ver estoque/parser_compras_sgi.py) - esse robô só chama
-    # init_schema/substituir_movimentacao_entrada_dia/dias_sincronizados_compras,
-    # nenhuma delas usa pandas; o resto do módulo (cloud/GitHub Actions, com pandas
-    # instalado) continua normal.
+except ImportError:  # os robôs do SGI desktop (scripts/sync_compras_sgi.py e
+    # scripts/sync_transferencias_sgi.py) rodam em Python 32-bit, onde pandas não tem
+    # build pronta (ver estoque/parser_compras_sgi.py). O resto do módulo
+    # (painel/GitHub Actions, com pandas instalado) continua normal.
+    #
+    # CONSEQUÊNCIA PRÁTICA, que já me pegou: função que passe por _df() devolve
+    # DataFrame e só funciona lá. Toda função chamada por robô tem que devolver
+    # list[dict] - é por isso que existem possiveis_duplicatas_* e
+    # ultimas_execucoes_lista() em vez de reaproveitar as versões em DataFrame.
     pd = None
 from sqlalchemy import bindparam, create_engine, text
 
@@ -114,8 +118,9 @@ def init_schema() -> None:
         raw.close()
 
 
-def _comandos_do_schema(contendo: str) -> list[str]:
-    """Comandos do schema.sql que citam `contendo`, um a um.
+def _comandos_do_schema(*termos: str) -> list[str]:
+    """Comandos do schema.sql que citam qualquer um dos `termos`, um a um, na ordem do
+    arquivo (a view vem depois da tabela que ela consulta, e isso importa).
 
     Existe porque init_schema() manda o arquivo INTEIRO numa tacada só, o que o
     psycopg2 aceita e o pg8000 não (o robô local usa pg8000 - ver
@@ -127,15 +132,15 @@ def _comandos_do_schema(contendo: str) -> list[str]:
         # Tira comentários de linha antes de decidir: um "--" que cite a tabela não
         # torna o comando relevante.
         corpo = "\n".join(l for l in bruto.splitlines() if not l.strip().startswith("--")).strip()
-        if corpo and contendo in corpo:
+        if corpo and any(t in corpo for t in termos):
             comandos.append(corpo + ";")
     return comandos
 
 
-def garantir_schema_transferencias() -> list[str]:
-    """Cria o que o robô de transferências precisa, se ainda não existir: a tabela
-    movimentacao_transferencia, seu índice, e a versão de v_saldo_produto que desconta
-    as transferências do saldo.
+def garantir_schema_robos() -> list[str]:
+    """Cria o que os robôs do SGI desktop precisam, se ainda não existir: a tabela
+    movimentacao_transferencia (+ índice), a versão de v_saldo_produto que desconta as
+    transferências do saldo, e a tabela sync_execucoes do histórico de execuções.
 
     POR QUE existe: o schema.sql é a fonte da verdade, mas ninguém roda migração neste
     projeto - as tabelas de produção nasceram do painel chamando init_schema(). A
@@ -146,9 +151,10 @@ def garantir_schema_transferencias() -> list[str]:
     IF NOT EXISTS / OR REPLACE.
 
     Devolve a lista de comandos executados (para o robô dizer o que fez)."""
-    comandos = _comandos_do_schema("movimentacao_transferencia")
+    comandos = _comandos_do_schema("movimentacao_transferencia", "sync_execucoes")
     if not comandos:
-        raise RuntimeError("Não achei no schema.sql os comandos de movimentacao_transferencia.")
+        raise RuntimeError("Não achei no schema.sql os comandos dos robôs "
+                           "(movimentacao_transferencia / sync_execucoes).")
     for cmd in comandos:
         # Uma transação por comando: no Postgres, erro aborta a transação inteira - se
         # a view falhasse junto com a tabela, a tabela recém-criada também seria
@@ -167,6 +173,70 @@ def garantir_schema_transferencias() -> list[str]:
                 conn.execute(text("DROP VIEW IF EXISTS v_saldo_produto"))
                 conn.execute(text(cmd))
     return [c.split("\n", 1)[0].strip() for c in comandos]
+
+
+def registrar_execucao_robo(origem: str, periodo_inicio: date | None, periodo_fim: date | None,
+                            status: str, dias: int | None = None, linhas: int | None = None,
+                            resumo: str | None = None) -> None:
+    """Anota, de uma vez, uma execução já terminada de robô em sync_execucoes.
+
+    Usa a MESMA tabela do sync de vendas (iniciar_execucao/finalizar_execucao, que são
+    em dois tempos porque aquele roda no GitHub Actions e pode morrer no meio). Aqui o
+    robô é local e curto: registrar no fim, numa linha só, evita deixar execução
+    'rodando' pendurada quando alguém fecha o terminal. De brinde, o histórico dos robôs
+    aparece no painel junto com o das vendas, que já lê esta tabela.
+
+    Nunca derruba o robô: histórico é registro, não parte da sincronização - se o banco
+    recusar a anotação, o que foi gravado continua gravado e válido."""
+    try:
+        with get_engine().begin() as conn:
+            conn.execute(text("""
+                INSERT INTO sync_execucoes
+                    (origem, finalizado_em, status, resumo, periodo_inicio, periodo_fim, dias, linhas)
+                VALUES (:o, now(), :st, :r, :ini, :fim, :dias, :linhas)
+            """), {"o": origem[:30], "st": status, "r": (resumo or "")[:4000],
+                   "ini": periodo_inicio, "fim": periodo_fim, "dias": dias, "linhas": linhas})
+    except Exception as e:  # noqa: BLE001
+        print(f"  (não deu pra registrar a execução no histórico: {e})")
+
+
+def ultimas_execucoes_lista(limite: int = 20, origem: str | None = None,
+                            prefixo_origem: str | None = None) -> list[dict]:
+    """Igual a ultimas_execucoes(), mas devolve list[dict] em vez de DataFrame.
+
+    Existe porque os robôs rodam no Python de 32 bits, onde NÃO há pandas (ver o
+    try/except do import no topo deste módulo): qualquer função daqui que passe por
+    _df() quebra com ModuleNotFoundError quando chamada pelo robô. Aconteceu de verdade
+    em 09/10/2026 com `--historico`. As funções que os robôs usam têm que falar
+    list[dict], como possiveis_duplicatas_*.
+
+    `prefixo_origem` ('robo-%') separa as execuções dos robôs do SGI das do sync de
+    vendas, que roda 2x por dia pelo GitHub Actions e, sem filtro, ocupa a lista
+    inteira: 20 linhas de histórico viram 10 dias só de vendas."""
+    cond, params = ["TRUE"], {"l": limite}
+    if origem:
+        cond.append("origem = :o"); params["o"] = origem
+    if prefixo_origem:
+        cond.append("origem LIKE :pre"); params["pre"] = prefixo_origem
+    with get_engine().begin() as conn:
+        linhas = conn.execute(text(f"""
+            SELECT id, iniciado_em, finalizado_em, origem, status,
+                   periodo_inicio, periodo_fim, dias, linhas, resumo
+            FROM sync_execucoes WHERE {' AND '.join(cond)}
+            ORDER BY id DESC LIMIT :l"""), params).mappings().all()
+    return [dict(l) for l in linhas]
+
+
+def ultimo_periodo_coberto(origem: str) -> date | None:
+    """Maior `periodo_fim` já coberto com sucesso por esse robô, ou None.
+
+    É o MÁXIMO, e não a execução mais recente, de propósito: se alguém rodar hoje com
+    --ate numa data antiga para refazer um trecho, a execução recente cobriria menos
+    que a anterior, e pegar "a última" faria o robô recomeçar lá atrás na vez seguinte."""
+    with get_engine().begin() as conn:
+        return conn.execute(text("""SELECT MAX(periodo_fim) FROM sync_execucoes
+                                    WHERE origem = :o AND status = 'ok'"""),
+                            {"o": origem}).scalar()
 
 
 def _df(sql: str, **params) -> pd.DataFrame:
@@ -799,9 +869,17 @@ def finalizar_execucao(exec_id: int, status: str, resumo: str) -> None:
                              WHERE id = :i"""), {"s": status, "r": resumo[:4000], "i": exec_id})
 
 
-def ultimas_execucoes(limite: int = 10) -> pd.DataFrame:
-    return _df("""SELECT id, iniciado_em, finalizado_em, origem, status, resumo
-                  FROM sync_execucoes ORDER BY id DESC LIMIT :l""", l=limite)
+def ultimas_execucoes(limite: int = 10, origem: str | None = None) -> pd.DataFrame:
+    """Histórico de execuções: o sync de vendas e os robôs do SGI desktop, na mesma
+    tabela. `periodo_inicio/periodo_fim/dias/linhas` só vêm preenchidos nas execuções
+    dos robôs (ver registrar_execucao_robo)."""
+    cond, params = ["TRUE"], {"l": limite}
+    if origem:
+        cond.append("origem = :o"); params["o"] = origem
+    return _df(f"""SELECT id, iniciado_em, finalizado_em, origem, status,
+                          periodo_inicio, periodo_fim, dias, linhas, resumo
+                   FROM sync_execucoes WHERE {' AND '.join(cond)}
+                   ORDER BY id DESC LIMIT :l""", **params)
 
 
 # -------------------------------------------------------------------------------- pdfs

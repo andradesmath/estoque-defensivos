@@ -208,12 +208,32 @@ def test_comandos_do_schema_separa_so_o_que_importa():
     gravação quebra com 'relation does not exist' depois de todo o trabalho feito."""
     from estoque.db import _comandos_do_schema
 
-    cmds = _comandos_do_schema("movimentacao_transferencia")
-    assert len(cmds) == 3
+    cmds = _comandos_do_schema("movimentacao_transferencia", "sync_execucoes")
     assert cmds[0].startswith("CREATE TABLE IF NOT EXISTS movimentacao_transferencia")
-    assert cmds[1].startswith("CREATE INDEX IF NOT EXISTS ix_mov_transferencia_data")
     # A view precisa vir DEPOIS da tabela que ela consulta.
-    assert cmds[2].startswith("CREATE OR REPLACE VIEW v_saldo_produto")
+    assert cmds[-1].startswith("CREATE OR REPLACE VIEW v_saldo_produto")
     assert all(c.rstrip().endswith(";") for c in cmds)
     # Nenhum comando pode ser só comentário solto.
     assert not any(c.lstrip().startswith("--") for c in cmds)
+    # Todo comando precisa ser idempotente: o robô roda isto em TODA execução.
+    assert all(("IF NOT EXISTS" in c) or c.startswith("CREATE OR REPLACE") for c in cmds)
+    # As colunas novas de sync_execucoes entram por ALTER, não no CREATE: a tabela já
+    # existe em produção e CREATE TABLE IF NOT EXISTS não altera tabela existente.
+    alters = [c for c in cmds if c.startswith("ALTER TABLE sync_execucoes")]
+    assert {"periodo_inicio", "periodo_fim", "dias", "linhas"} == {
+        c.split("IF NOT EXISTS")[1].split()[0] for c in alters}
+
+
+def test_uma_so_definicao_de_cada_tabela_no_schema():
+    """Pegou um bug real: eu criei uma segunda tabela sync_execucoes sem ver que ela já
+    existia (com outras colunas), e em produção o CREATE IF NOT EXISTS seria um no-op
+    silencioso - o INSERT do robô é que quebraria, com a tabela 'existindo'."""
+    import re
+    from pathlib import Path
+
+    from estoque.db import SCHEMA_PATH
+
+    nomes = re.findall(r"CREATE TABLE IF NOT EXISTS (\w+)",
+                       Path(SCHEMA_PATH).read_text(encoding="utf-8"))
+    repetidas = {n for n in nomes if nomes.count(n) > 1}
+    assert not repetidas, f"tabelas definidas mais de uma vez no schema.sql: {repetidas}"

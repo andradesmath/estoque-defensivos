@@ -71,6 +71,7 @@ CLASSE_RELATORIO = "TF_REL_CUSTO_DE_COMPRAS"
 MENU_RELATORIO = "Relatórios->Compras->Relação de Custo de Compras"
 PASTA_EXPORT = Path(os.environ.get("SYNC_COMPRAS_PASTA", r"D:\SGI\export_compras"))
 LOJA = "Porteira"  # so Porteira compra; o saldo e compartilhado entre as lojas (ver schema.sql)
+ROBO = "robo-compras"  # coluna `origem` em sync_execucoes (historico de execucoes)
 
 
 def conectar_relatorio():
@@ -158,6 +159,13 @@ def main(argv=None) -> int:
                 # que usam psycopg2), entao pular aqui e seguro - so avisa.
                 print(f"AVISO: init_schema() falhou ({e}); seguindo sem recriar schema "
                       "(ja deve existir, criado pelo painel).")
+                # Garante ao menos o que os robos precisam, comando a comando (o que o
+                # pg8000 aceita e o script inteiro nao) - entre eles sync_execucoes, o
+                # historico de execucoes.
+                try:
+                    db.garantir_schema_robos()
+                except Exception as e2:  # noqa: BLE001
+                    print(f"AVISO: garantir_schema_robos() tambem falhou ({e2}).")
             feitos = db.dias_sincronizados_compras(LOJA)
         dias = sync_core.dias_a_sincronizar(inicio, hoje, feitos, janela)
 
@@ -180,17 +188,30 @@ def main(argv=None) -> int:
 
     print(f"{len(dias)} dia(s) a sincronizar: " + ", ".join(f"{d:%d/%m}" for d in dias))
 
+    total_linhas = 0
+
     def _rodar(lista):
         """Processa a lista de dias e devolve (falhados, mensagens de erro)."""
+        nonlocal total_linhas
         falhou, msgs = [], []
         for dia in lista:
             try:
-                processar_dia(app, rep, dia, gravar, args.dry_run)
+                out = processar_dia(app, rep, dia, gravar, args.dry_run)
+                total_linhas += out.get("gravados", 0)
             except Exception as e:  # noqa: BLE001 - um dia ruim nao pode travar os outros
                 falhou.append(dia)
                 msgs.append(f"{dia:%d/%m/%Y}: {e}")
                 print(f"  [{dia:%d/%m/%Y}] ERRO: {e}")
         return falhou, msgs
+
+    def _registrar(status, detalhe=None):
+        """Anota a execucao em sync_execucoes (historico). Compras continua decidindo o
+        que buscar por sync_dias_compras, que e dia a dia e mais preciso - este registro
+        e so historico/auditoria ("o robo rodou hoje?")."""
+        if args.dry_run or db is None:
+            return
+        db.registrar_execucao_robo(ROBO, min(dias), max(dias), status, dias=len(dias),
+                                   linhas=total_linhas, resumo=detalhe)
 
     falhou, erros = _rodar(dias)
 
@@ -208,8 +229,10 @@ def main(argv=None) -> int:
         print("\nFalhas nessa execucao (mesmo apos refazer):")
         for e in erros:
             print(" -", e)
+        _registrar("erro", detalhe="; ".join(erros)[:500])
         return 1
     print("\nSincronizacao de compras concluida sem erros.")
+    _registrar("ok")
     return 0
 
 
