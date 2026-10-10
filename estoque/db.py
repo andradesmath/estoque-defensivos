@@ -498,6 +498,24 @@ def produtos_para_match() -> dict:
     return {c: d for c, d in linhas}
 
 
+def data_contagem_da_loja(loja: str) -> date | None:
+    """Data da contagem física da unidade a que essa loja pertence, ou None.
+
+    É o marco zero daquele estoque: movimento ANTERIOR a ela já está dentro do número
+    contado, então o sync não precisa (nem deve) buscar antes disso. Olha
+    saldo_inicial_unidade de propósito, e não a view: lá os produtos sem contagem
+    própria herdam a data do cadastro, e o mínimo acabaria sendo a data da matriz.
+
+    None quando a unidade ainda não foi contada (ou é a matriz, que herda a data do
+    cadastro) - quem chama cai na data inicial geral."""
+    with get_engine().begin() as conn:
+        return conn.execute(text("""
+            SELECT MAX(si.data_saldo_inicial)
+              FROM saldo_inicial_unidade si
+              JOIN unidades_loja ul ON ul.unidade_estoque = si.unidade_estoque
+             WHERE ul.loja = :loja"""), {"loja": loja}).scalar()
+
+
 def unidade_tem_contagem(unidade: str) -> bool:
     """A unidade já tem contagem física registrada?
 

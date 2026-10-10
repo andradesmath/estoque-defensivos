@@ -168,3 +168,31 @@ def test_consolidado_nao_conta_duas_vezes_o_que_foi_transferido_antes_da_contage
     ind = paginas.calcular_indicadores(unidade=paginas.CONSOLIDADO)
     # 70 na matriz + 25 contados em Piatã. Nada de 100 nem de 125.
     assert float(ind[ind["cod_produto"] == "00001"].iloc[0]["saldo_atual"]) == 95
+
+
+def test_sync_comeca_na_data_da_contagem_da_unidade(banco):
+    """Venda anterior à contagem da unidade já está dentro do número contado: buscar
+    antes disso é baixar relatório que não altera saldo nenhum. Piatã foi contada em
+    10/10 - sem esta regra, a primeira execução baixaria 19 dias à toa."""
+    import importlib.util
+    from pathlib import Path
+
+    raiz = Path(__file__).resolve().parent.parent
+    spec = importlib.util.spec_from_file_location("sync_sgi", raiz / "scripts" / "sync_sgi.py")
+    sync = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(sync)
+
+    padrao = date(2026, 9, 22)
+    banco.criar_produto("00001", "PRODUTO 1", 100, D0)
+    # Matriz não tem contagem própria (herda a do cadastro): segue o padrão.
+    assert sync._inicio_da_loja("Porteira", padrao) == padrao
+    assert sync._inicio_da_loja("Piatã", padrao) == padrao   # ainda sem contagem
+
+    banco.definir_saldo_inicial_unidade("00001", FILIAL, 20, date(2026, 10, 10))
+    # +1 porque a contagem vale para o FIM do dia.
+    assert sync._inicio_da_loja("Piatã", padrao) == date(2026, 10, 11)
+    assert sync._inicio_da_loja("Porteira", padrao) == padrao  # a outra não muda
+
+    # Contagem mais ANTIGA que o padrão não faz o sync voltar no tempo.
+    banco.definir_saldo_inicial_unidade("00001", FILIAL, 20, date(2026, 9, 1))
+    assert sync._inicio_da_loja("Piatã", padrao) == padrao

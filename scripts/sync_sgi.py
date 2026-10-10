@@ -44,7 +44,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from urllib.parse import urljoin, urlsplit
 
 RAIZ_PROJETO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -460,6 +460,35 @@ def _data_br(txt: str) -> date:
     return datetime.strptime(txt, "%d/%m/%Y").date()
 
 
+def _inicio_da_loja(loja: str, padrao: date, sem_banco: bool = False) -> date:
+    """De que dia começar a buscar vendas DESTA loja.
+
+    Cada unidade tem a sua contagem física, e venda anterior a ela já está dentro do
+    número contado - buscar antes disso é baixar relatório que não vai alterar saldo
+    nenhum. Piatã foi contada em 10/10/2026: sem isto, a primeira execução baixaria 19
+    dias à toa.
+
+    A data sai do banco em vez de virar mais uma configuração: o marco já está lá,
+    gravado pela importação da contagem. Unidade sem contagem própria (a matriz, que
+    herda a data do cadastro) cai no padrão de sempre."""
+    if sem_banco:
+        return padrao
+    try:
+        from estoque import db
+        contagem = db.data_contagem_da_loja(loja)
+    except Exception as e:  # noqa: BLE001 - sem banco, o padrão ainda é um início válido
+        print(f"[{loja}] não deu pra olhar a data da contagem ({e}); usando {padrao:%d/%m/%Y}.")
+        return padrao
+    if contagem is None:
+        return padrao
+    # +1: a contagem vale para o FIM do dia, então o primeiro dia que ainda não está
+    # dentro dela é o seguinte (mesma regra do saldo em v_saldo_produto_unidade).
+    inicio = max(padrao, contagem + timedelta(days=1))
+    if inicio != padrao:
+        print(f"[{loja}] contagem em {contagem:%d/%m/%Y}; buscando a partir de {inicio:%d/%m/%Y}.")
+    return inicio
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="Sincroniza saídas de DEFENSIVOS a partir do SGI Solution.")
     ap.add_argument("--loja", choices=list(LOJA_PARA_EMPRESA_ENV), help="Só uma loja (debug).")
@@ -500,11 +529,12 @@ def main(argv=None) -> int:
     try:
         with sync_playwright() as pw:
             for loja in lojas:
+                inicio_loja = _inicio_da_loja(loja, inicio, args.dry_run)
                 if args.data:
                     dias = [args.data]
                 else:
-                    jan = (hoje - inicio).days + 1 if args.forcar_tudo else janela
-                    dias = sync_core.dias_a_sincronizar(inicio, hoje, dias_sinc(loja), jan)
+                    jan = (hoje - inicio_loja).days + 1 if args.forcar_tudo else janela
+                    dias = sync_core.dias_a_sincronizar(inicio_loja, hoje, dias_sinc(loja), jan)
                 try:
                     ok, erros = sincronizar_loja(pw, loja, dias, operacoes, gravar, args.permitir_zerar, args.headed,
                                                  salvar_pdf=salvar_pdf)
