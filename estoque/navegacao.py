@@ -60,7 +60,12 @@ CSS = """
 <style>
 /* Paleta da barra lateral. Verde-ardósia escuro (serra ao entardecer) com um só
    acento, o amarelo da faixa de rótulo de defensivo. Tokens aqui em cima pra trocar
-   a identidade num lugar só. */
+   a identidade num lugar só.
+
+   SOBRE OS !important: o Streamlit estiliza os componentes com classes geradas
+   (emotion) cuja especificidade varia de versão pra versão. Sem eles o alinhamento à
+   esquerda não pegava - os itens apareciam centralizados no painel real mesmo passando
+   num teste de CSS isolado. Estão só onde a regra PRECISA ganhar, não espalhados. */
 :root {
   --nav-bg: #0E1B1A;
   --nav-surface: #1A2B28;
@@ -69,32 +74,40 @@ CSS = """
   --nav-muted: #8AA09B;
   --nav-accent: #C9A227;
 }
-[data-testid="stSidebar"] { background: var(--nav-bg); border-right: 1px solid var(--nav-line); }
-[data-testid="stSidebar"] > div:first-child { padding-top: 1.2rem; }
+[data-testid="stSidebar"] {
+  background: var(--nav-bg); border-right: 1px solid var(--nav-line);
+  min-width: 268px;   /* largura em que as três unidades cabem lado a lado */
+}
+[data-testid="stSidebar"] > div:first-child { padding-top: 1.1rem; }
 /* 15 itens num menu só: sem apertar a pilha, metade fica abaixo da dobra. */
-[data-testid="stSidebar"] [data-testid="stVerticalBlock"] { gap: .1rem; }
+[data-testid="stSidebar"] [data-testid="stVerticalBlock"] { gap: .15rem; }
 
 /* Marca */
-.nav-marca { padding: 0 .25rem .9rem; }
+.nav-marca { padding: 0 .25rem .8rem; }
 .nav-marca b { color: var(--nav-text); font-size: 1.05rem; font-weight: 600; letter-spacing: -.01em; }
 .nav-marca span { display: block; color: var(--nav-muted); font-size: .76rem; margin-top: .05rem; }
 
-/* Rótulo de seção: peso e cor fazem a hierarquia; caixa alta só comeria legibilidade. */
-.nav-secao { color: var(--nav-muted); font-size: .72rem; font-weight: 600;
-             margin: .9rem .25rem .25rem; }
+/* Rótulo de seção. padding em vez de margin, e line-height explícito: com margem o
+   texto ficava cortado pelo bloco seguinte quando a pilha apertou. */
+.nav-secao {
+  color: var(--nav-muted); font-size: .72rem; font-weight: 600;
+  line-height: 1.6; padding: .75rem .25rem .15rem; margin: 0;
+}
 
-/* Itens do menu. O alinhamento à esquerda tem que ser aplicado TAMBÉM no container
-   interno do rótulo: o Streamlit põe o texto num div próprio dentro do <button>, e
-   mexer só no button deixa tudo centralizado (foi o que aconteceu na 1ª versão). */
+/* Itens do menu */
 [data-testid="stSidebar"] .stButton > button {
-  width: 100%; display: flex; align-items: center; justify-content: flex-start; gap: .55rem;
+  width: 100%; display: flex !important; align-items: center;
+  justify-content: flex-start !important; gap: .55rem; text-align: left !important;
   border: none; background: transparent; color: var(--nav-text);
   padding: .34rem .5rem; border-radius: 7px; font-weight: 400; font-size: .88rem;
   min-height: 0; line-height: 1.35;
   border-left: 3px solid transparent;  /* reserva o espaço da faixa: nada "pula" ao ativar */
 }
-[data-testid="stSidebar"] .stButton > button > div,
-[data-testid="stSidebar"] .stButton > button p { text-align: left; margin: 0; flex: 1 1 auto; }
+/* O rótulo vive num container próprio dentro do <button>; alinhar só o button deixa
+   o texto centralizado. */
+[data-testid="stSidebar"] .stButton > button * { text-align: left !important; }
+[data-testid="stSidebar"] .stButton > button > div { flex: 1 1 auto; min-width: 0; }
+[data-testid="stSidebar"] .stButton > button p { margin: 0; }
 [data-testid="stSidebar"] .stButton > button > span { flex: 0 0 auto; }
 [data-testid="stSidebar"] .stButton > button:hover { background: var(--nav-surface); color: var(--nav-text); }
 /* Ativo: a faixa de classificação. */
@@ -104,15 +117,18 @@ CSS = """
 }
 [data-testid="stSidebar"] .stButton > button:focus-visible { outline: 2px solid var(--nav-accent); outline-offset: 1px; }
 
-/* Seletor de unidade: as três opções têm que caber numa linha só - quebrado em duas,
-   o "Consolidado" sozinho parece outro controle. */
-[data-testid="stSidebar"] [data-testid="stSegmentedControl"] { margin-bottom: .2rem; }
-[data-testid="stSidebar"] [data-testid="stSegmentedControl"] > div { flex-wrap: nowrap; }
-[data-testid="stSidebar"] [data-testid="stSegmentedControl"] button {
-  font-size: .72rem; padding: .18rem .45rem; white-space: nowrap; min-height: 0;
-  flex: 1 1 auto; min-width: 0;
+/* Seletor de unidade: as três opções dividem a largura por igual e nunca transbordam.
+   min-width:0 é o que permite o item encolher dentro do flex - sem ele o conteúdo
+   define o tamanho e o grupo estoura a barra. */
+[data-testid="stSidebar"] [data-testid="stSegmentedControl"] { margin-bottom: .1rem; max-width: 100%; }
+[data-testid="stSidebar"] [data-testid="stSegmentedControl"] > div {
+  flex-wrap: nowrap !important; width: 100%; gap: 2px;
 }
-[data-testid="stSidebar"] hr { border-color: var(--nav-line); margin: .8rem 0 .2rem; }
+[data-testid="stSidebar"] [data-testid="stSegmentedControl"] button {
+  flex: 1 1 0; min-width: 0; font-size: .7rem; padding: .2rem .25rem;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-height: 0;
+}
+[data-testid="stSidebar"] hr { border-color: var(--nav-line); margin: .7rem 0 .2rem; }
 </style>
 """
 
