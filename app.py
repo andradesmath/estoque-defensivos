@@ -48,6 +48,8 @@ h1, h2, h3 { color: #16374B; }
 
 from estoque import db  # noqa: E402
 from estoque.compat import LARG  # noqa: E402
+from estoque import paginas  # noqa: E402
+from estoque import paginas  # noqa: E402
 from estoque.paginas import PAGINAS  # noqa: E402
 
 
@@ -84,6 +86,22 @@ def _preparar_banco() -> bool:
     return True
 
 
+def _avisar_unidade_sem_contagem(unidade: str | None) -> None:
+    """Unidade sem contagem física mostra só o FLUXO (o que entrou menos o que saiu),
+    não o estoque. O número é real, mas não é o saldo - e pode ficar negativo. Avisar
+    é obrigatório: sem isso alguém compra em cima de um número que não significa o que
+    parece."""
+    if not unidade or unidade == paginas.CONSOLIDADO:
+        return
+    try:
+        if db.unidade_tem_contagem(unidade):
+            return
+    except Exception:  # noqa: BLE001 - banco antigo, antes das unidades
+        return
+    st.warning(f"**{unidade}** ainda não tem contagem física. O que aparece é só o "
+               "movimento desde que o controle começou — não o estoque real.", icon="⚠️")
+
+
 def main() -> None:
     if not _autenticar():
         st.stop()
@@ -96,6 +114,15 @@ def main() -> None:
 
     with st.sidebar:
         st.title("📦 Defensivos")
+        # Seletor de UNIDADE antes do de tela, e global: o saldo é o mesmo assunto em
+        # todas as telas, e ver uma em Piatã e outra na matriz seria a receita para ler
+        # o número errado. "Consolidado" soma as unidades - é o que o painel sempre fez
+        # quando só havia um estoque.
+        unidades = paginas.unidades_disponiveis()
+        padrao = unidades.index("Barra da Estiva") if "Barra da Estiva" in unidades else 0
+        st.radio("Unidade", unidades, index=padrao, key="unidade_estoque")
+        _avisar_unidade_sem_contagem(st.session_state.get("unidade_estoque"))
+        st.divider()
         pagina = st.radio("Tela", list(PAGINAS), label_visibility="collapsed", key="pagina")
         st.divider()
         if st.button("Atualizar dados", **LARG):

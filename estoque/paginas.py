@@ -27,18 +27,47 @@ DATA_INICIAL_SYNC = date(2026, 9, 22)
 
 
 # ------------------------------------------------------------------------------ dados
+CONSOLIDADO = "Consolidado"
+
+
+def unidades_disponiveis() -> list[str]:
+    """Opções do seletor: as unidades cadastradas + o consolidado no fim."""
+    try:
+        return [u["nome"] for u in db.listar_unidades()] + [CONSOLIDADO]
+    except Exception:  # noqa: BLE001 - banco antigo, antes das unidades
+        return [CONSOLIDADO]
+
+
+def unidade_atual() -> str:
+    """A unidade escolhida na barra lateral, guardada na sessão.
+
+    O seletor é GLOBAL, e não por tela, porque o saldo é o mesmo assunto em todas:
+    trocar de unidade no meio da navegação e ver uma tela em Piatã e outra na matriz
+    seria a receita para ler o número errado."""
+    return st.session_state.get("unidade_estoque", CONSOLIDADO)
+
+
 @st.cache_data(ttl=30, show_spinner=False)
-def carregar_base() -> dict:
+def carregar_base(unidade: str = CONSOLIDADO) -> dict:
+    """Tudo que os indicadores precisam, já recortado pela unidade escolhida.
+
+    `unidade=CONSOLIDADO` significa sem filtro: soma as unidades, que é o que o painel
+    sempre fez quando só havia um estoque."""
+    u = None if unidade == CONSOLIDADO else unidade
     return {
-        "produtos": db.listar_produtos_base(),
-        "mov": db.listar_movimentacao_agregada(),
-        "aj": db.listar_ajustes_todos(),
+        "unidade": unidade,
+        "produtos": db.listar_produtos_base(u),
+        "mov": db.listar_movimentacao_agregada(u),
+        "aj": db.listar_ajustes_todos(u),
         # Entradas por COMPRA (robô do SGI desktop). Sem elas, o saldo calculado aqui
         # fica MENOR que o real e diverge de v_saldo_produto - foi o que aconteceu com
         # o JOINER em 09/10/2026 (painel -2, view 10).
-        "ent": db.listar_movimentacao_entrada_compra(),
-        # Transferências de saída pra Piatã (robô do SGI desktop): descontam do saldo.
-        "tr": db.listar_transferencias(),
+        "ent": db.listar_movimentacao_entrada_compra(unidade=u),
+        # A mesma transferência é saída de uma unidade e entrada na outra. Na visão da
+        # matriz só a saída conta; na de Piatã, só a entrada; no consolidado, as duas,
+        # que se anulam - a mercadoria mudou de lugar, não saiu do grupo.
+        "tr": db.listar_transferencias(unidade_origem=u),
+        "tr_ent": db.listar_transferencias(unidade_destino=u) if u else db.listar_transferencias(),
     }
 
 
@@ -47,12 +76,12 @@ def limpar_cache() -> None:
 
 
 def calcular_indicadores(janela_dias: int = 30, cobertura_alvo: int = 30, excesso_dias: int = 120,
-                         dias_sem_giro: int = 30) -> pd.DataFrame:
-    b = carregar_base()
+                         dias_sem_giro: int = 30, unidade: str | None = None) -> pd.DataFrame:
+    b = carregar_base(unidade or unidade_atual())
     return kpis.indicadores(b["produtos"], b["mov"], b["aj"], hoje_brasil(), janela_dias=janela_dias,
                             cobertura_alvo=cobertura_alvo, excesso_dias=excesso_dias,
                             dias_sem_giro=dias_sem_giro, entradas=b["ent"],
-                            transferencias=b["tr"])
+                            transferencias=b["tr"], transferencias_entrada=b["tr_ent"])
 
 
 def _rotulo_produto(cod: str, mapa_desc: dict) -> str:
@@ -129,8 +158,9 @@ def pagina_visao_geral() -> None:
                 st.dataframe(sub[["cod_produto", "descricao", "saldo_atual", "ponto_pedido", "sugestao_compra"]],
                              hide_index=True, **LARG)
 
-    b = carregar_base()
-    ev = kpis.evolucao_valor_estoque(b["produtos"], b["mov"], b["aj"], hoje_brasil(), b["ent"], b["tr"])
+    b = carregar_base(unidade_atual())
+    ev = kpis.evolucao_valor_estoque(b["produtos"], b["mov"], b["aj"], hoje_brasil(), b["ent"],
+                                     b["tr"], b["tr_ent"])
     if not ev.empty and ev["valor"].sum() > 0:
         st.subheader("Evolução do valor do estoque (a custo atual)")
         fig = px.line(ev, x="data", y="valor", labels={"data": "", "valor": "R$"})

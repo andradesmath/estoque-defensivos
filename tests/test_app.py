@@ -121,7 +121,10 @@ def test_senha_protege_o_painel(banco, monkeypatch):
     _por_rotulo(at.text_input, "Senha").set_value("errada").run()
     assert any("incorreta" in e.value for e in at.error)
     _por_rotulo(at.text_input, "Senha").set_value("segredo").run()
-    assert len(at.sidebar.radio) == 1
+    # Por CHAVE, e não contando: a sidebar tem dois radios desde que as unidades
+    # entraram (Unidade e Tela), e contar quebraria de novo no próximo que surgisse.
+    chaves = {r.key for r in at.sidebar.radio}
+    assert {"pagina", "unidade_estoque"} <= chaves, chaves
 
 
 def test_visao_geral_anualiza_com_historico_suficiente(app_semeado, monkeypatch):
@@ -132,3 +135,44 @@ def test_visao_geral_anualiza_com_historico_suficiente(app_semeado, monkeypatch)
     _ir(app_semeado, "Visão geral")
     rotulos = [m.label for m in app_semeado.metric]
     assert "Giro anualizado" in rotulos and "ROI do estoque (anualizado)" in rotulos
+
+
+def _saldo_na_tela(at, cod):
+    """Lê o saldo de um produto na tela 'Saldo por produto'."""
+    _ir(at, "Saldo por produto")
+    for df in at.dataframe:
+        d = df.value
+        if "cod_produto" in getattr(d, "columns", []) and "saldo_atual" in d.columns:
+            linha = d[d["cod_produto"] == cod]
+            if not linha.empty:
+                return float(linha.iloc[0]["saldo_atual"])
+    raise AssertionError(f"produto {cod} não apareceu na tela de saldo")
+
+
+def test_seletor_de_unidade_muda_o_saldo_mostrado(banco, monkeypatch):
+    """A transferência tira da matriz e põe em Piatã, e o painel tem que mostrar isso
+    nas três visões. É o teste de ponta a ponta do pedido: sem ele, o seletor poderia
+    estar só trocando um rótulo."""
+    import streamlit as st
+
+    from estoque import paginas
+    monkeypatch.delenv("APP_SENHA", raising=False)
+    monkeypatch.setattr(paginas, "hoje_brasil", lambda: date(2026, 9, 30))
+    banco.criar_produto("00001", "PRODUTO 1", 100, D0)
+    dia = date(2026, 9, 23)
+    banco.substituir_transferencias_periodo("PORTEIRA PIATA", dia, dia, {dia: [
+        {"cod_produto": "00001", "descricao": "PRODUTO 1",
+         "quantidade_transferida": 30, "valor_transferido": 0}]})
+    st.cache_data.clear(); st.cache_resource.clear()
+    at = AppTest.from_file(APP, default_timeout=60).run()
+    assert not at.exception, [e.value for e in at.exception]
+
+    at.sidebar.radio(key="unidade_estoque").set_value("Barra da Estiva").run()
+    assert _saldo_na_tela(at, "00001") == 70
+
+    at.sidebar.radio(key="unidade_estoque").set_value("Piatã").run()
+    assert _saldo_na_tela(at, "00001") == 30
+
+    at.sidebar.radio(key="unidade_estoque").set_value(paginas.CONSOLIDADO).run()
+    # Mercadoria mudou de lugar, não saiu do grupo.
+    assert _saldo_na_tela(at, "00001") == 100

@@ -120,18 +120,23 @@ def init_schema() -> None:
 
 def _comandos_do_schema(*termos: str) -> list[str]:
     """Comandos do schema.sql que citam qualquer um dos `termos`, um a um, na ordem do
-    arquivo (a view vem depois da tabela que ela consulta, e isso importa).
+    arquivo (as views vêm depois das tabelas que consultam, e isso importa).
 
-    Existe porque init_schema() manda o arquivo INTEIRO numa tacada só, o que o
-    psycopg2 aceita e o pg8000 não (o robô local usa pg8000 - ver
-    requirements-local-robo-compras.txt). Separar por ';' basta aqui porque o schema
-    não tem função/trigger com ';' dentro de corpo citado."""
-    script = SCHEMA_PATH.read_text(encoding="utf-8")
+    Existe porque init_schema() manda o arquivo INTEIRO numa tacada, o que o psycopg2
+    aceita e o pg8000 não (o robô local usa pg8000 - ver
+    requirements-local-robo-compras.txt).
+
+    Os COMENTÁRIOS saem ANTES de dividir por ';', e não depois: um ';' dentro de
+    comentário ("Hoje é sempre a matriz; a coluna existe para...") partia o texto no
+    meio, e o pedaço de frase que sobrava - já sem o '--' na frente - passava por
+    comando. O teste pegou isso. Dividir por ';' só é suficiente porque o schema não
+    tem função/trigger com ';' dentro de corpo citado; '--' dentro de string literal
+    também não existe aqui."""
+    bruto = SCHEMA_PATH.read_text(encoding="utf-8")
+    script = "\n".join(l.split("--", 1)[0] for l in bruto.splitlines())
     comandos = []
-    for bruto in script.split(";"):
-        # Tira comentários de linha antes de decidir: um "--" que cite a tabela não
-        # torna o comando relevante.
-        corpo = "\n".join(l for l in bruto.splitlines() if not l.strip().startswith("--")).strip()
+    for pedaco in script.split(";"):
+        corpo = pedaco.strip()
         if corpo and any(t in corpo for t in termos):
             comandos.append(corpo + ";")
     return comandos
@@ -151,7 +156,11 @@ def garantir_schema_robos() -> list[str]:
     IF NOT EXISTS / OR REPLACE.
 
     Devolve a lista de comandos executados (para o robô dizer o que fez)."""
-    comandos = _comandos_do_schema("movimentacao_transferencia", "sync_execucoes")
+    # "v_saldo_produto" entra na lista porque as views agora sao DROP+CREATE: sem o
+    # termo, o recorte pegaria o CREATE da view por unidade mas nao os DROPs, e o
+    # CREATE falharia com "ja existe" ou com dependencia da consolidada.
+    comandos = _comandos_do_schema("movimentacao_transferencia", "sync_execucoes",
+                                   "v_saldo_produto")
     if not comandos:
         raise RuntimeError("Não achei no schema.sql os comandos dos robôs "
                            "(movimentacao_transferencia / sync_execucoes).")
@@ -428,13 +437,77 @@ def saldo_em(cod: str, dia: date) -> Decimal:
     return Decimal(str(df.iloc[0]["saldo"]))
 
 
+UNIDADE_PADRAO = "Barra da Estiva"
+
+
+def listar_unidades() -> list[dict]:
+    """As unidades de estoque, na ordem de exibição. list[dict] e não DataFrame: isto é
+    chamado também pelos robôs, que rodam sem pandas (ver o import no topo)."""
+    with get_engine().begin() as conn:
+        linhas = conn.execute(text("""
+            SELECT nome, destino_sgi, ordem, usa_saldo_do_produto
+            FROM unidades ORDER BY ordem, nome""")).mappings().all()
+    return [dict(l) for l in linhas]
+
+
+def saldo_por_unidade(unidade: str | None = None, so_ativos: bool = True) -> pd.DataFrame:
+    """Saldo de cada produto numa unidade (ou de todas, se unidade=None).
+
+    O consolidado NÃO sai daqui: é v_saldo_produto, que já soma as unidades e tem as
+    mesmas colunas de sempre - foi feito assim para o painel atual não precisar mudar
+    quando as unidades entraram."""
+    cond, params = ["TRUE"], {}
+    if unidade:
+        cond.append("unidade_estoque = :u"); params["u"] = unidade
+    if so_ativos:
+        cond.append("ativo")
+    return _df(f"""SELECT * FROM v_saldo_produto_unidade
+                   WHERE {' AND '.join(cond)}
+                   ORDER BY descricao, unidade_estoque""", **params)
+
+
+def unidade_tem_contagem(unidade: str) -> bool:
+    """A unidade já tem contagem física registrada?
+
+    A matriz responde TRUE mesmo sem linhas em saldo_inicial_unidade, porque herda
+    produtos.saldo_inicial (usa_saldo_do_produto). Sem essa distinção o painel avisaria
+    "sem contagem" justamente na unidade que tem a contagem mais antiga do sistema."""
+    with get_engine().begin() as conn:
+        return bool(conn.execute(text("""
+            SELECT EXISTS (SELECT 1 FROM unidades
+                            WHERE nome = :u AND usa_saldo_do_produto)
+                OR EXISTS (SELECT 1 FROM saldo_inicial_unidade WHERE unidade_estoque = :u)
+        """), {"u": unidade}).scalar())
+
+
+def definir_saldo_inicial_unidade(cod: str, unidade: str, saldo, dia: date) -> None:
+    """Grava a contagem física que serve de marco zero daquela unidade.
+
+    Para a matriz isto é opcional: sem linha aqui, ela herda produtos.saldo_inicial
+    (unidades.usa_saldo_do_produto) - foi o que evitou migrar os dados de produção."""
+    with get_engine().begin() as conn:
+        conn.execute(text("""
+            INSERT INTO saldo_inicial_unidade
+                (cod_produto, unidade_estoque, saldo_inicial, data_saldo_inicial)
+            VALUES (:c, :u, :s, :d)
+            ON CONFLICT (cod_produto, unidade_estoque) DO UPDATE SET
+                saldo_inicial = EXCLUDED.saldo_inicial,
+                data_saldo_inicial = EXCLUDED.data_saldo_inicial,
+                atualizado_em = now()
+        """), {"c": normalizar_cod(cod), "u": unidade, "s": para_decimal(saldo), "d": dia})
+
+
 def registrar_ajuste(
     cod: str, dia: date, tipo: str, quantidade, custo_unitario=None, observacao=None,
-    atualizar_custo: bool = False,
+    atualizar_custo: bool = False, unidade_estoque: str = UNIDADE_PADRAO,
 ) -> int:
     """`quantidade` entra POSITIVA para entrada/transferência/perda (o sinal vem do
     tipo). Para 'correcao' é o delta assinado. Recusa datas <= data_saldo_inicial: o
-    saldo ignora esses movimentos (a contagem já os incorpora)."""
+    saldo ignora esses movimentos (a contagem já os incorpora).
+
+    `unidade_estoque` é a unidade cujo estoque o ajuste move - uma perda em Piatã não
+    pode descontar da matriz. O default mantém o comportamento de antes das unidades,
+    quando todo ajuste era da matriz."""
     if tipo not in TIPOS_AJUSTE:
         raise ValueError(f"Tipo inválido: {tipo}")
     cod = normalizar_cod(cod)
@@ -457,9 +530,11 @@ def registrar_ajuste(
     custo = para_decimal(custo_unitario)
     with get_engine().begin() as conn:
         novo_id = conn.execute(text("""
-            INSERT INTO ajustes (cod_produto, data, tipo, quantidade, custo_unitario, observacao)
-            VALUES (:c, :d, :t, :q, :cu, :o) RETURNING id
-        """), {"c": cod, "d": dia, "t": tipo, "q": q, "cu": custo, "o": texto_ou_none(observacao)}).scalar_one()
+            INSERT INTO ajustes
+                (cod_produto, data, tipo, quantidade, custo_unitario, observacao, unidade_estoque)
+            VALUES (:c, :d, :t, :q, :cu, :o, :u) RETURNING id
+        """), {"c": cod, "d": dia, "t": tipo, "q": q, "cu": custo,
+               "o": texto_ou_none(observacao), "u": unidade_estoque}).scalar_one()
         if atualizar_custo and custo is not None and tipo == "entrada":
             conn.execute(text("UPDATE produtos SET preco_custo = :cu, atualizado_em = now() WHERE cod_produto = :c"),
                          {"cu": custo, "c": cod})
@@ -669,8 +744,18 @@ def substituir_transferencias_periodo(destino: str, inicio: date, fim: date,
 
 
 def listar_transferencias(ini: date | None = None, fim: date | None = None,
-                          cod: str | None = None) -> pd.DataFrame:
+                          cod: str | None = None, unidade_origem: str | None = None,
+                          unidade_destino: str | None = None) -> pd.DataFrame:
+    """A MESMA transferência é saída de uma unidade e entrada na outra - qual das duas
+    coisas ela é depende de quem pergunta. `unidade_origem` traz o que saiu dali;
+    `unidade_destino`, o que chegou ali (casando com unidades.destino_sgi, o rótulo que
+    o SGI usa). Sem filtro, traz tudo, que é o que o consolidado quer."""
     cond, params = ["TRUE"], {}
+    if unidade_origem:
+        cond.append("origem = :uo"); params["uo"] = unidade_origem
+    if unidade_destino:
+        cond.append("destino = (SELECT destino_sgi FROM unidades WHERE nome = :ud)")
+        params["ud"] = unidade_destino
     if ini:
         cond.append("data >= :ini"); params["ini"] = ini
     if fim:
@@ -762,8 +847,12 @@ def listar_sync_dias_compras(limite: int = 200) -> pd.DataFrame:
 
 
 def listar_movimentacao_entrada_compra(ini: date | None = None, fim: date | None = None,
-                                       cod: str | None = None) -> pd.DataFrame:
+                                       cod: str | None = None,
+                                       unidade: str | None = None) -> pd.DataFrame:
     cond, params = ["TRUE"], {}
+    if unidade:
+        cond.append("loja IN (SELECT loja FROM unidades_loja WHERE unidade_estoque = :u)")
+        params["u"] = unidade
     if ini:
         cond.append("data >= :ini"); params["ini"] = ini
     if fim:
@@ -805,18 +894,43 @@ def listar_movimentacao(ini: date | None = None, fim: date | None = None, cod: s
                    FROM movimentacao_saida WHERE {' AND '.join(cond)} ORDER BY data DESC, cod_produto""", **params)
 
 
-def listar_movimentacao_agregada() -> pd.DataFrame:
-    """Soma das lojas por (cod, data) — entrada dos indicadores."""
-    return _df("""SELECT cod_produto, data, SUM(quantidade_saida) AS quantidade_saida,
-                         SUM(valor_saida) AS valor_saida
-                  FROM movimentacao_saida GROUP BY cod_produto, data""")
+def listar_movimentacao_agregada(unidade: str | None = None) -> pd.DataFrame:
+    """Soma das lojas por (cod, data) — entrada dos indicadores.
+
+    Com `unidade`, soma só as lojas daquela unidade de estoque: o giro de Piatã não
+    pode incluir as vendas de Barra da Estiva. Sem ela, soma tudo (o consolidado)."""
+    filtro = ""
+    params = {}
+    if unidade:
+        filtro = ("JOIN unidades_loja ul ON ul.loja = m.loja AND ul.unidade_estoque = :u")
+        params["u"] = unidade
+    return _df(f"""SELECT m.cod_produto, m.data, SUM(m.quantidade_saida) AS quantidade_saida,
+                          SUM(m.valor_saida) AS valor_saida
+                   FROM movimentacao_saida m {filtro}
+                   GROUP BY m.cod_produto, m.data""", **params)
 
 
-def listar_ajustes_todos() -> pd.DataFrame:
-    return _df("SELECT cod_produto, data, tipo, quantidade FROM ajustes")
+def listar_ajustes_todos(unidade: str | None = None) -> pd.DataFrame:
+    cond, params = ["TRUE"], {}
+    if unidade:
+        cond.append("unidade_estoque = :u"); params["u"] = unidade
+    return _df(f"SELECT cod_produto, data, tipo, quantidade FROM ajustes "
+               f"WHERE {' AND '.join(cond)}", **params)
 
 
-def listar_produtos_base() -> pd.DataFrame:
+def listar_produtos_base(unidade: str | None = None) -> pd.DataFrame:
+    """Cadastro + saldo inicial. Com `unidade`, o saldo inicial e a data vêm da
+    contagem DAQUELA unidade (v_saldo_produto_unidade); sem ela, do cadastro, que é o
+    comportamento de sempre.
+
+    A data importa tanto quanto o número: é o corte do que já está dentro da contagem,
+    e cada unidade contou num dia diferente."""
+    if unidade:
+        return _df("""SELECT cod_produto, descricao, unidade, saldo_inicial, data_saldo_inicial,
+                             preco_custo, preco_venda, lead_time_dias, estoque_minimo,
+                             fornecedor, observacao, ativo
+                      FROM v_saldo_produto_unidade WHERE unidade_estoque = :u
+                      ORDER BY descricao""", u=unidade)
     return _df("""SELECT cod_produto, descricao, unidade, saldo_inicial, data_saldo_inicial,
                          preco_custo, preco_venda, lead_time_dias, estoque_minimo, fornecedor,
                          observacao, ativo

@@ -98,6 +98,88 @@ CREATE TABLE IF NOT EXISTS ajustes (
 );
 CREATE INDEX IF NOT EXISTS ix_ajustes_cod ON ajustes (cod_produto, data);
 
+-- ============================================================== UNIDADES (multi-loja)
+-- Uma UNIDADE DE ESTOQUE é um estoque físico independente. Duas hoje:
+--   Barra da Estiva = lojas Porteira + Casa de Adubo. São duas "empresas" no SGI, mas
+--                     dividem o MESMO estoque físico - foi assim desde o começo, e é
+--                     por isso que o saldo nunca foi separado por loja.
+--   Piatã           = a filial. Estoque próprio: o que sai da matriz por transferência
+--                     entra aqui.
+--
+-- NOME DAS COLUNAS: `unidade_estoque`, e não `unidade`, porque `produtos.unidade` já
+-- significa unidade de MEDIDA (UN, KG, LT) e aparece ao lado desta na view do saldo.
+-- Duas colunas `unidade` com sentidos diferentes no mesmo SELECT é bug silencioso
+-- esperando acontecer.
+--
+-- O que torna isso possível sem reescrever as tabelas de movimento: elas já gravam
+-- `loja`. O que faltava era (a) dizer a que unidade cada loja pertence, (b) ter saldo
+-- inicial por unidade, e (c) fazer a transferência CREDITAR o destino em vez de só
+-- debitar a origem.
+CREATE TABLE IF NOT EXISTS unidades (
+    nome        VARCHAR(40) PRIMARY KEY,
+    -- Rótulo que o SGI usa em movimentacao_transferencia.destino para esta unidade
+    -- ('PORTEIRA PIATA'). NULL na matriz, que hoje nunca é destino de transferência.
+    destino_sgi VARCHAR(40) UNIQUE,
+    ordem       INTEGER NOT NULL DEFAULT 0,  -- ordem de exibição no painel
+    -- TRUE na unidade que herda produtos.saldo_inicial quando não há linha própria em
+    -- saldo_inicial_unidade. É o que evita MIGRAR os dados de produção: a matriz
+    -- segue lendo o saldo inicial de onde sempre leu (a tela de produtos continua
+    -- valendo), e só as unidades novas precisam da contagem própria. Sem isto, o
+    -- saldo da matriz zeraria no dia em que esta view subisse - os testes de banco
+    -- pegaram exatamente isso (saldo 16 virou -9).
+    usa_saldo_do_produto BOOLEAN NOT NULL DEFAULT FALSE
+);
+INSERT INTO unidades (nome, destino_sgi, ordem, usa_saldo_do_produto) VALUES
+    ('Barra da Estiva', NULL, 1, TRUE),
+    ('Piatã', 'PORTEIRA PIATA', 2, FALSE)
+ON CONFLICT (nome) DO NOTHING;
+-- Coluna acrescentada depois do primeiro deploy desta secao: ALTER para quem ja criou.
+ALTER TABLE unidades ADD COLUMN IF NOT EXISTS usa_saldo_do_produto BOOLEAN NOT NULL DEFAULT FALSE;
+UPDATE unidades SET usa_saldo_do_produto = TRUE
+ WHERE nome = 'Barra da Estiva' AND usa_saldo_do_produto IS DISTINCT FROM TRUE;
+
+-- De que unidade é cada loja dos movimentos (movimentacao_saida.loja,
+-- movimentacao_entrada_compra.loja). Tabela, e não constante no código, porque o saldo
+-- é calculado na VIEW: o mapa precisa existir dentro do banco.
+CREATE TABLE IF NOT EXISTS unidades_loja (
+    loja            VARCHAR(40) PRIMARY KEY,
+    unidade_estoque VARCHAR(40) NOT NULL REFERENCES unidades (nome) ON UPDATE CASCADE
+);
+INSERT INTO unidades_loja (loja, unidade_estoque) VALUES
+    ('Porteira', 'Barra da Estiva'),
+    ('Casa de Adubo', 'Barra da Estiva'),
+    ('Piatã', 'Piatã')
+ON CONFLICT (loja) DO NOTHING;
+
+-- Saldo inicial POR UNIDADE: a contagem física que serve de marco zero de cada
+-- estoque. Barra da Estiva contou em 22/09/2026; Piatã tem contagem própria, em outra
+-- data - e é por isso que a data também é por unidade, não uma só do sistema.
+--
+-- Substitui produtos.saldo_inicial / produtos.data_saldo_inicial, que valiam quando
+-- havia um estoque só. Aquelas colunas continuam na tabela e são MIGRADAS para cá como
+-- a linha de 'Barra da Estiva' (ver db.garantir_schema_unidades), mas quem manda no
+-- saldo passa a ser esta tabela.
+CREATE TABLE IF NOT EXISTS saldo_inicial_unidade (
+    cod_produto        VARCHAR(10)   NOT NULL REFERENCES produtos (cod_produto) ON DELETE CASCADE,
+    unidade_estoque    VARCHAR(40)   NOT NULL REFERENCES unidades (nome) ON UPDATE CASCADE,
+    saldo_inicial      NUMERIC(14,3) NOT NULL DEFAULT 0,
+    data_saldo_inicial DATE          NOT NULL,
+    atualizado_em      TIMESTAMPTZ   NOT NULL DEFAULT now(),
+    PRIMARY KEY (cod_produto, unidade_estoque)
+);
+
+-- Ajuste manual pertence a uma unidade (uma perda em Piatã não pode descontar da
+-- matriz). DEFAULT cobre os lançamentos que já existiam, todos de Barra da Estiva.
+ALTER TABLE ajustes
+    ADD COLUMN IF NOT EXISTS unidade_estoque VARCHAR(40) NOT NULL DEFAULT 'Barra da Estiva';
+
+-- De onde a transferência saiu. Hoje é sempre a matriz; a coluna existe para o dia em
+-- que houver Piatã -> matriz, e para a view não ter a origem escrita na pedra.
+-- Fora da PK de propósito: a chave (cod, data, destino) já garante a idempotência do
+-- robô, e duas origens para o mesmo destino no mesmo dia não existem na operação.
+ALTER TABLE movimentacao_transferencia
+    ADD COLUMN IF NOT EXISTS origem VARCHAR(40) NOT NULL DEFAULT 'Barra da Estiva';
+
 -- Códigos que o SGI classifica como DEFENSIVOS mas que não entram no controle
 -- (adjuvantes, fertilizantes etc.). Somem da lista de "não encontrados".
 CREATE TABLE IF NOT EXISTS produtos_ignorados (
@@ -181,67 +263,126 @@ ALTER TABLE sync_execucoes ADD COLUMN IF NOT EXISTS linhas         INTEGER;
 CREATE INDEX IF NOT EXISTS ix_sync_execucoes_origem
     ON sync_execucoes (origem, iniciado_em DESC);
 
-CREATE OR REPLACE VIEW v_saldo_produto AS
+-- Saldo POR UNIDADE DE ESTOQUE. É a view-base: v_saldo_produto (o consolidado, logo
+-- abaixo) é a soma desta.
+--
+-- Regras, todas as três deliberadas:
+--   1. Só conta movimento POSTERIOR à data_saldo_inicial DAQUELA unidade. Cada unidade
+--      contou o estoque num dia diferente, então o corte é por unidade - usar uma data
+--      global faria o estoque de Piatã contar vendas anteriores à própria contagem.
+--   2. A transferência DEBITA a origem e CREDITA o destino. Antes ela só debitava,
+--      porque Piatã não existia como estoque aqui: o produto simplesmente sumia.
+--   3. O produto aparece em TODA unidade cadastrada, mesmo sem saldo inicial lá
+--      (CROSS JOIN) - senão um item transferido para Piatã antes de ser contado lá não
+--      teria linha nenhuma, e a transferência sumiria do consolidado.
+-- DROP + CREATE, e não CREATE OR REPLACE: o REPLACE recusa qualquer mudança de TIPO
+-- de coluna, e basta um MAX(varchar) virar text para ele falhar. Quando isso acontece
+-- dentro do init_schema, a view fica com a definição ANTIGA sem ninguém perceber -
+-- aconteceu no teste de upgrade desta versão, e a consolidada teria continuado sem
+-- Piatã. A consolidada é dropada primeiro porque depende da por-unidade. Nada mais
+-- depende das duas (conferido), então recriar é seguro.
+DROP VIEW IF EXISTS v_saldo_produto;
+DROP VIEW IF EXISTS v_saldo_produto_unidade;
+CREATE VIEW v_saldo_produto_unidade AS
 SELECT
     p.cod_produto,
+    u.nome                                                      AS unidade_estoque,
     p.descricao,
-    p.unidade,
-    p.saldo_inicial,
-    p.data_saldo_inicial,
+    p.unidade,                       -- unidade de MEDIDA (UN, KG) - ver nota no schema
+    COALESCE(si.saldo_inicial,
+             CASE WHEN u.usa_saldo_do_produto THEN p.saldo_inicial ELSE 0 END)
+                                                                AS saldo_inicial,
+    COALESCE(si.data_saldo_inicial, p.data_saldo_inicial)       AS data_saldo_inicial,
     COALESCE(a.total, 0)                                        AS ajustes_total,
     COALESCE(s.qtd, 0)                                          AS saidas_total,
     COALESCE(s.valor, 0)                                        AS valor_saidas_total,
-    p.saldo_inicial + COALESCE(a.total, 0) - COALESCE(s.qtd, 0)
-        + COALESCE(ec.qtd, 0) - COALESCE(tr.qtd, 0)             AS saldo_atual,
+    COALESCE(ec.qtd, 0)                                         AS entradas_compras_total,
+    COALESCE(ec.valor, 0)                                       AS valor_entradas_compras_total,
+    COALESCE(ts.qtd, 0)                                         AS transferencias_saida_total,
+    COALESCE(ts.valor, 0)                                       AS valor_transferencias_saida_total,
+    COALESCE(te.qtd, 0)                                         AS transferencias_entrada_total,
+    COALESCE(te.valor, 0)                                       AS valor_transferencias_entrada_total,
+    COALESCE(si.saldo_inicial,
+             CASE WHEN u.usa_saldo_do_produto THEN p.saldo_inicial ELSE 0 END)
+        + COALESCE(a.total, 0) - COALESCE(s.qtd, 0)
+        + COALESCE(ec.qtd, 0) - COALESCE(ts.qtd, 0) + COALESCE(te.qtd, 0)
+                                                                AS saldo_atual,
     p.preco_custo,
     p.preco_venda,
     p.lead_time_dias,
     p.estoque_minimo,
     p.fornecedor,
     p.observacao,
-    p.ativo,
-    -- Novas (ao final de propósito: CREATE OR REPLACE VIEW do Postgres só aceita
-    -- colunas novas no fim da lista - inserir no meio quebra com InvalidTableDefinition
-    -- porque desloca a posição das colunas já existentes em produção).
-    COALESCE(ec.qtd, 0)                                         AS entradas_compras_total,
-    COALESCE(ec.valor, 0)                                       AS valor_entradas_compras_total,
-    COALESCE(tr.qtd, 0)                                         AS transferencias_total,
-    COALESCE(tr.valor, 0)                                       AS valor_transferencias_total
+    p.ativo
 FROM produtos p
-LEFT JOIN (
-    SELECT m.cod_produto,
-           SUM(m.quantidade_saida) AS qtd,
-           SUM(m.valor_saida)      AS valor
+CROSS JOIN unidades u
+LEFT JOIN saldo_inicial_unidade si
+       ON si.cod_produto = p.cod_produto AND si.unidade_estoque = u.nome
+-- Corte por unidade: COALESCE cobre produto ainda sem contagem naquela unidade.
+LEFT JOIN LATERAL (
+    SELECT COALESCE(si.data_saldo_inicial, p.data_saldo_inicial) AS d
+) corte ON TRUE
+LEFT JOIN LATERAL (
+    SELECT SUM(m.quantidade_saida) AS qtd, SUM(m.valor_saida) AS valor
     FROM movimentacao_saida m
-    JOIN produtos p2 ON p2.cod_produto = m.cod_produto
-    WHERE m.data > p2.data_saldo_inicial
-    GROUP BY m.cod_produto
-) s ON s.cod_produto = p.cod_produto
-LEFT JOIN (
-    SELECT m.cod_produto,
-           SUM(m.quantidade_entrada) AS qtd,
-           SUM(m.valor_entrada)      AS valor
+    JOIN unidades_loja ul ON ul.loja = m.loja
+    WHERE m.cod_produto = p.cod_produto AND ul.unidade_estoque = u.nome
+      AND m.data > corte.d
+) s ON TRUE
+LEFT JOIN LATERAL (
+    SELECT SUM(m.quantidade_entrada) AS qtd, SUM(m.valor_entrada) AS valor
     FROM movimentacao_entrada_compra m
-    JOIN produtos p4 ON p4.cod_produto = m.cod_produto
-    WHERE m.data > p4.data_saldo_inicial
-    GROUP BY m.cod_produto
-) ec ON ec.cod_produto = p.cod_produto
-LEFT JOIN (
-    SELECT m.cod_produto,
-           SUM(m.quantidade_transferida) AS qtd,
-           SUM(m.valor_transferido)      AS valor
+    JOIN unidades_loja ul ON ul.loja = m.loja
+    WHERE m.cod_produto = p.cod_produto AND ul.unidade_estoque = u.nome
+      AND m.data > corte.d
+) ec ON TRUE
+LEFT JOIN LATERAL (
+    SELECT SUM(m.quantidade_transferida) AS qtd, SUM(m.valor_transferido) AS valor
     FROM movimentacao_transferencia m
-    JOIN produtos p5 ON p5.cod_produto = m.cod_produto
-    WHERE m.data > p5.data_saldo_inicial
-    GROUP BY m.cod_produto
-) tr ON tr.cod_produto = p.cod_produto
-LEFT JOIN (
-    SELECT j.cod_produto, SUM(j.quantidade) AS total
+    WHERE m.cod_produto = p.cod_produto AND m.origem = u.nome
+      AND m.data > corte.d
+) ts ON TRUE
+LEFT JOIN LATERAL (
+    SELECT SUM(m.quantidade_transferida) AS qtd, SUM(m.valor_transferido) AS valor
+    FROM movimentacao_transferencia m
+    WHERE m.cod_produto = p.cod_produto AND m.destino = u.destino_sgi
+      AND m.data > corte.d
+) te ON TRUE
+LEFT JOIN LATERAL (
+    SELECT SUM(j.quantidade) AS total
     FROM ajustes j
-    JOIN produtos p3 ON p3.cod_produto = j.cod_produto
-    WHERE j.data > p3.data_saldo_inicial
-    GROUP BY j.cod_produto
-) a ON a.cod_produto = p.cod_produto;
+    WHERE j.cod_produto = p.cod_produto AND j.unidade_estoque = u.nome
+      AND j.data > corte.d
+) a ON TRUE;
+
+-- Consolidado das unidades, com as MESMAS colunas de antes: é o que o painel já
+-- consome. Antes era "o estoque" (só existia um); agora é a soma das unidades.
+-- transferencias_total continua sendo só a SAÍDA, para não mudar o sentido da coluna
+-- em quem já a lê; no consolidado as duas pontas se anulam no saldo de qualquer jeito.
+CREATE VIEW v_saldo_produto AS
+SELECT
+    v.cod_produto,
+    MAX(v.descricao)                        AS descricao,
+    MAX(v.unidade)::VARCHAR(20)             AS unidade,
+    SUM(v.saldo_inicial)                    AS saldo_inicial,
+    MIN(v.data_saldo_inicial)               AS data_saldo_inicial,
+    SUM(v.ajustes_total)                    AS ajustes_total,
+    SUM(v.saidas_total)                     AS saidas_total,
+    SUM(v.valor_saidas_total)               AS valor_saidas_total,
+    SUM(v.saldo_atual)                      AS saldo_atual,
+    MAX(v.preco_custo)                      AS preco_custo,
+    MAX(v.preco_venda)                      AS preco_venda,
+    MAX(v.lead_time_dias)                   AS lead_time_dias,
+    MAX(v.estoque_minimo)                   AS estoque_minimo,
+    MAX(v.fornecedor)                       AS fornecedor,
+    MAX(v.observacao)                       AS observacao,
+    BOOL_OR(v.ativo)                        AS ativo,
+    SUM(v.entradas_compras_total)           AS entradas_compras_total,
+    SUM(v.valor_entradas_compras_total)     AS valor_entradas_compras_total,
+    SUM(v.transferencias_saida_total)       AS transferencias_total,
+    SUM(v.valor_transferencias_saida_total) AS valor_transferencias_total
+FROM v_saldo_produto_unidade v
+GROUP BY v.cod_produto;
 
 -- Vendidos no SGI sem cadastro em `produtos` e fora da lista de ignorados.
 CREATE OR REPLACE VIEW v_nao_encontrados AS

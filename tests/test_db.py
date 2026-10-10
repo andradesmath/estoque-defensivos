@@ -208,15 +208,32 @@ def test_comandos_do_schema_separa_so_o_que_importa():
     gravação quebra com 'relation does not exist' depois de todo o trabalho feito."""
     from estoque.db import _comandos_do_schema
 
-    cmds = _comandos_do_schema("movimentacao_transferencia", "sync_execucoes")
+    cmds = _comandos_do_schema("movimentacao_transferencia", "sync_execucoes",
+                               "v_saldo_produto")
     assert cmds[0].startswith("CREATE TABLE IF NOT EXISTS movimentacao_transferencia")
-    # A view precisa vir DEPOIS da tabela que ela consulta.
-    assert cmds[-1].startswith("CREATE OR REPLACE VIEW v_saldo_produto")
+    # As views precisam vir DEPOIS das tabelas que elas consultam, e a consolidada por
+    # ultimo: ela le a por-unidade.
+    assert cmds[-1].startswith("CREATE VIEW v_saldo_produto AS")
+    assert cmds[-2].startswith("CREATE VIEW v_saldo_produto_unidade")
+    # E os DROPs tem que vir antes dos CREATEs, a consolidada primeiro (a por-unidade
+    # nao pode ser dropada enquanto a consolidada depende dela).
+    drops = [i for i, c in enumerate(cmds) if c.startswith("DROP VIEW")]
+    assert cmds[drops[0]].startswith("DROP VIEW IF EXISTS v_saldo_produto;")
+    assert cmds[drops[1]].startswith("DROP VIEW IF EXISTS v_saldo_produto_unidade")
+    assert max(drops) < len(cmds) - 2
     assert all(c.rstrip().endswith(";") for c in cmds)
     # Nenhum comando pode ser só comentário solto.
     assert not any(c.lstrip().startswith("--") for c in cmds)
-    # Todo comando precisa ser idempotente: o robô roda isto em TODA execução.
-    assert all(("IF NOT EXISTS" in c) or c.startswith("CREATE OR REPLACE") for c in cmds)
+    # Todo comando precisa ser idempotente: o robô roda isto em TODA execução. As views
+    # conseguem isso pelo par DROP IF EXISTS + CREATE, não pelo CREATE sozinho.
+    assert all(("IF NOT EXISTS" in c) or c.startswith("CREATE OR REPLACE")
+               or c.startswith("DROP VIEW IF EXISTS") or c.startswith("CREATE VIEW")
+               for c in cmds)
+    # Todo comando tem que COMEÇAR com uma palavra-chave SQL. Sem isto, um ';' dentro
+    # de comentário parte o texto e o pedaço de frase que sobra vira "comando" - foi o
+    # que aconteceu com "Hoje é sempre a matriz; a coluna existe para...".
+    assert all(c.split()[0] in {"CREATE", "ALTER", "DROP", "INSERT", "UPDATE"}
+               for c in cmds), [c.splitlines()[0] for c in cmds]
     # As colunas novas de sync_execucoes entram por ALTER, não no CREATE: a tabela já
     # existe em produção e CREATE TABLE IF NOT EXISTS não altera tabela existente.
     alters = [c for c in cmds if c.startswith("ALTER TABLE sync_execucoes")]

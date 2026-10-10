@@ -65,6 +65,12 @@ from estoque.util import hoje_brasil  # noqa: E402
 LOJA_PARA_EMPRESA_ENV = {
     "Porteira": "SGI_EMPRESA_PORTEIRA",
     "Casa de Adubo": "SGI_EMPRESA_CASA_ADUBO",
+    # Filial de Piatã: estoque PRÓPRIO (unidade 'Piatã' em unidades_loja), ao contrário
+    # das duas acima, que dividem o estoque de Barra da Estiva. No portal a empresa
+    # chama 'PORTEIRA PIATA' (sem til) - o nome aqui é o nosso rótulo de loja, o do
+    # portal fica no secret. Sem o secret definido, a loja simplesmente não é
+    # sincronizada (ver main): é assim que as lojas entram uma de cada vez.
+    "Piatã": "SGI_EMPRESA_PIATA",
 }
 GRUPO_ALVO = "DEFENSIVOS"
 AGRUPAMENTO_PRODUTO = "produto"          # <option value="produto">Produto</option>
