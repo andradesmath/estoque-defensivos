@@ -40,7 +40,18 @@ def app_semeado(banco, monkeypatch, pdf_real_bytes, base_xlsx_bytes):
 
 
 def _ir(at, tela):
-    at.sidebar.radio(key="pagina").set_value(tela).run()
+    """Navega clicando no item do menu, como a pessoa faz. A navegação virou botões
+    agrupados por seção (estoque/navegacao.py); cada um tem key 'nav_<nome da tela>'."""
+    at.sidebar.button(key=f"nav_{tela}").click().run()
+    assert not at.exception, [e.value for e in at.exception]
+    return at
+
+
+def _trocar_unidade(at, unidade):
+    """O seletor de unidade é um segmented_control; mexer no session_state é o jeito
+    estável de acioná-lo no AppTest, que não expõe esse widget."""
+    at.session_state["unidade_estoque"] = unidade
+    at.run()
     assert not at.exception, [e.value for e in at.exception]
     return at
 
@@ -121,10 +132,9 @@ def test_senha_protege_o_painel(banco, monkeypatch):
     _por_rotulo(at.text_input, "Senha").set_value("errada").run()
     assert any("incorreta" in e.value for e in at.error)
     _por_rotulo(at.text_input, "Senha").set_value("segredo").run()
-    # Por CHAVE, e não contando: a sidebar tem dois radios desde que as unidades
-    # entraram (Unidade e Tela), e contar quebraria de novo no próximo que surgisse.
-    chaves = {r.key for r in at.sidebar.radio}
-    assert {"pagina", "unidade_estoque"} <= chaves, chaves
+    # Pela CHAVE de um item do menu: contar widgets quebraria a cada item novo.
+    chaves = {b.key for b in at.sidebar.button}
+    assert "nav_Visão geral" in chaves, chaves
 
 
 def test_visao_geral_anualiza_com_historico_suficiente(app_semeado, monkeypatch):
@@ -167,12 +177,12 @@ def test_seletor_de_unidade_muda_o_saldo_mostrado(banco, monkeypatch):
     at = AppTest.from_file(APP, default_timeout=60).run()
     assert not at.exception, [e.value for e in at.exception]
 
-    at.sidebar.radio(key="unidade_estoque").set_value("Barra da Estiva").run()
+    _trocar_unidade(at, "Barra da Estiva")
     assert _saldo_na_tela(at, "00001") == 70
 
-    at.sidebar.radio(key="unidade_estoque").set_value("Piatã").run()
+    _trocar_unidade(at, "Piatã")
     assert _saldo_na_tela(at, "00001") == 30
 
-    at.sidebar.radio(key="unidade_estoque").set_value(paginas.CONSOLIDADO).run()
+    _trocar_unidade(at, paginas.CONSOLIDADO)
     # Mercadoria mudou de lugar, não saiu do grupo.
     assert _saldo_na_tela(at, "00001") == 100

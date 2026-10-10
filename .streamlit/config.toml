@@ -1,16 +1,24 @@
 # Tema visual do painel. Referência: https://docs.streamlit.io/develop/api-reference/configuration/config.toml
+#
+# A paleta vem do assunto, não de um kit: defensivo agrícola tem FAIXA DE CLASSIFICAÇÃO
+# no rótulo - uma cor que diz o que a pessoa precisa saber. O painel segue a mesma
+# regra: cor só onde significa estado (unidade ativa, tela ativa, alerta de saldo), e
+# um único acento, o amarelo-ouro dessa faixa. O resto é uma escala quente de cinza.
+#
+# Mexeu aqui? Os tokens da barra lateral vivem em estoque/navegacao.py (CSS) e
+# precisam acompanhar.
 [theme]
 base = "light"
-primaryColor = "#1B4B66"             # azul petróleo — botões, seleção, destaque
+primaryColor = "#9A7B1F"             # ouro escurecido: contraste suficiente sobre branco
 backgroundColor = "#FFFFFF"
-secondaryBackgroundColor = "#F4F6F8" # cinza claro neutro — inputs, cards
-textColor = "#1A1F24"
+secondaryBackgroundColor = "#F5F4F0" # cinza quente — inputs, cards, cabeçalho de tabela
+textColor = "#1C211F"
 font = "sans serif"
 
 [theme.sidebar]
-backgroundColor = "#102A3E"          # navy escuro — menu lateral
-secondaryBackgroundColor = "#193C54"
-textColor = "#F2F5F7"
+backgroundColor = "#0E1B1A"          # verde-ardósia profundo
+secondaryBackgroundColor = "#162624"
+textColor = "#E7EEEB"
 
 [client]
 toolbarMode = "minimal"

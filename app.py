@@ -22,22 +22,24 @@ st.set_page_config(page_title="Estoque de Defensivos", page_icon="📦", layout=
 
 # Acabamento visual leve sobre o tema (.streamlit/config.toml): cards com sombra sutil,
 # métricas destacadas e uma folha de impressão (esconde menu/botões ao "Imprimir" do navegador).
+# Acabamento do CONTEÚDO (a barra lateral tem o seu em estoque/navegacao.py).
+# Métricas são a primeira coisa lida na visão geral: ganham borda fina e um filete de
+# acento no topo, que é o mesmo vocabulário da faixa do menu. Sem sombra - sombra em
+# tudo é o que faz um painel parecer um kit de cards genérico.
 st.markdown("""
 <style>
 [data-testid="stMetric"] {
     background: #FFFFFF;
-    border: 1px solid #E3E8EC;
-    border-radius: 10px;
+    border: 1px solid #E6E3DB;
+    border-top: 2px solid #C9A227;
+    border-radius: 6px;
     padding: 14px 16px 10px;
-    box-shadow: 0 1px 3px rgba(16, 42, 62, 0.08);
 }
-[data-testid="stMetricValue"] { color: #1B4B66; }
-h1, h2, h3 { color: #16374B; }
-[data-testid="stSidebar"] h1 { color: #F2F5F7 !important; font-size: 1.3rem; }
-[data-testid="stDataFrame"], [data-testid="stExpander"] {
-    border-radius: 8px;
-    overflow: hidden;
-}
+[data-testid="stMetricValue"] { color: #1C211F; font-weight: 600; letter-spacing: -.02em; }
+[data-testid="stMetricLabel"] { color: #6B7570; }
+h1, h2, h3 { color: #1C211F; letter-spacing: -.01em; }
+h1 { font-weight: 600; }
+[data-testid="stDataFrame"], [data-testid="stExpander"] { border-radius: 6px; overflow: hidden; }
 @media print {
     [data-testid="stSidebar"], [data-testid="stHeader"], [data-testid="stToolbar"],
     button, [data-testid="stDownloadButton"] { display: none !important; }
@@ -48,8 +50,7 @@ h1, h2, h3 { color: #16374B; }
 
 from estoque import db  # noqa: E402
 from estoque.compat import LARG  # noqa: E402
-from estoque import paginas  # noqa: E402
-from estoque import paginas  # noqa: E402
+from estoque import navegacao, paginas  # noqa: E402
 from estoque.paginas import PAGINAS  # noqa: E402
 
 
@@ -86,20 +87,23 @@ def _preparar_banco() -> bool:
     return True
 
 
-def _avisar_unidade_sem_contagem(unidade: str | None) -> None:
-    """Unidade sem contagem física mostra só o FLUXO (o que entrou menos o que saiu),
-    não o estoque. O número é real, mas não é o saldo - e pode ficar negativo. Avisar
-    é obrigatório: sem isso alguém compra em cima de um número que não significa o que
-    parece."""
+def _aviso_unidade_sem_contagem(unidade: str | None) -> str | None:
+    """Texto do aviso quando a unidade não tem contagem física, ou None.
+
+    Unidade sem contagem mostra só o FLUXO (o que entrou menos o que saiu), não o
+    estoque: o número é real, mas não é o saldo, e pode ficar negativo. Avisar é
+    obrigatório - sem isso alguém compra em cima de um número que não significa o que
+    parece. Devolve o texto em vez de desenhar, para a barra lateral decidir onde ele
+    entra na hierarquia."""
     if not unidade or unidade == paginas.CONSOLIDADO:
-        return
+        return None
     try:
         if db.unidade_tem_contagem(unidade):
-            return
+            return None
     except Exception:  # noqa: BLE001 - banco antigo, antes das unidades
-        return
-    st.warning(f"**{unidade}** ainda não tem contagem física. O que aparece é só o "
-               "movimento desde que o controle começou — não o estoque real.", icon="⚠️")
+        return None
+    return (f"**{unidade}** ainda não tem contagem física. O que aparece é só o "
+            "movimento desde que o controle começou — não o estoque real.")
 
 
 def main() -> None:
@@ -112,26 +116,13 @@ def main() -> None:
         st.caption(f"Detalhe técnico: {type(e).__name__}")
         st.stop()
 
-    with st.sidebar:
-        st.title("📦 Defensivos")
-        # Seletor de UNIDADE antes do de tela, e global: o saldo é o mesmo assunto em
-        # todas as telas, e ver uma em Piatã e outra na matriz seria a receita para ler
-        # o número errado. "Consolidado" soma as unidades - é o que o painel sempre fez
-        # quando só havia um estoque.
-        unidades = paginas.unidades_disponiveis()
-        padrao = unidades.index("Barra da Estiva") if "Barra da Estiva" in unidades else 0
-        st.radio("Unidade", unidades, index=padrao, key="unidade_estoque")
-        if st.session_state.get("erro_unidades"):
-            st.error("Não consegui ler as unidades de estoque; mostrando só o "
-                     "consolidado.", icon="⚠️")
-            st.caption(st.session_state["erro_unidades"])
-        _avisar_unidade_sem_contagem(st.session_state.get("unidade_estoque"))
-        st.divider()
-        pagina = st.radio("Tela", list(PAGINAS), label_visibility="collapsed", key="pagina")
-        st.divider()
-        if st.button("Atualizar dados", **LARG):
-            st.cache_data.clear()
-            st.rerun()
+    unidades = paginas.unidades_disponiveis()
+    pagina = navegacao.render(
+        telas=list(PAGINAS),
+        unidades=unidades,
+        aviso_unidade=_aviso_unidade_sem_contagem(st.session_state.get("unidade_estoque")),
+        erro_unidades=st.session_state.get("erro_unidades"),
+    )
     PAGINAS[pagina]()
 
 
