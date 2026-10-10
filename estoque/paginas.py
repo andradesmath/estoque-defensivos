@@ -89,13 +89,33 @@ def limpar_cache() -> None:
     st.cache_data.clear()
 
 
+def serie_consolidada() -> pd.DataFrame:
+    """Saldo diário do CONSOLIDADO: a soma das séries de cada unidade.
+
+    Não dá pra recalcular tudo junto com um corte de data só. Cada unidade tem a sua
+    data de contagem, e um corte único contaria DE NOVO o que foi transferido antes da
+    contagem do destino - a mercadoria já está dentro do saldo inicial dele. Foi esse o
+    bug: o consolidado ficava igual ao da matriz, porque o saldo inicial contado de
+    Piatã nunca entrava e as duas pontas da transferência se anulavam."""
+    series = []
+    for u in db.listar_unidades():
+        b = carregar_base(u["nome"])
+        series.append(kpis.serie_saldo_diaria(
+            b["produtos"], b["mov"], b["aj"], hoje_brasil(),
+            b["ent"], b["tr"], b["tr_ent"]))
+    return kpis.somar_series(series)
+
+
 def calcular_indicadores(janela_dias: int = 30, cobertura_alvo: int = 30, excesso_dias: int = 120,
                          dias_sem_giro: int = 30, unidade: str | None = None) -> pd.DataFrame:
-    b = carregar_base(unidade or unidade_atual())
+    u = unidade or unidade_atual()
+    b = carregar_base(u)
+    serie = serie_consolidada() if u == CONSOLIDADO else None
     return kpis.indicadores(b["produtos"], b["mov"], b["aj"], hoje_brasil(), janela_dias=janela_dias,
                             cobertura_alvo=cobertura_alvo, excesso_dias=excesso_dias,
                             dias_sem_giro=dias_sem_giro, entradas=b["ent"],
-                            transferencias=b["tr"], transferencias_entrada=b["tr_ent"])
+                            transferencias=b["tr"], transferencias_entrada=b["tr_ent"],
+                            serie=serie)
 
 
 def _rotulo_produto(cod: str, mapa_desc: dict) -> str:
@@ -172,9 +192,11 @@ def pagina_visao_geral() -> None:
                 st.dataframe(sub[["cod_produto", "descricao", "saldo_atual", "ponto_pedido", "sugestao_compra"]],
                              hide_index=True, **LARG)
 
-    b = carregar_base(unidade_atual())
+    u = unidade_atual()
+    b = carregar_base(u)
     ev = kpis.evolucao_valor_estoque(b["produtos"], b["mov"], b["aj"], hoje_brasil(), b["ent"],
-                                     b["tr"], b["tr_ent"])
+                                     b["tr"], b["tr_ent"],
+                                     serie=serie_consolidada() if u == CONSOLIDADO else None)
     if not ev.empty and ev["valor"].sum() > 0:
         st.subheader("Evolução do valor do estoque (a custo atual)")
         fig = px.line(ev, x="data", y="valor", labels={"data": "", "valor": "R$"})

@@ -128,3 +128,43 @@ def test_aplicar_schema_por_partes_cria_tudo_e_repete_sem_erro(banco):
     assert {u["nome"] for u in banco.listar_unidades()} == {MATRIZ, FILIAL}
     banco.aplicar_schema_por_partes()  # idempotente
     assert {u["nome"] for u in banco.listar_unidades()} == {MATRIZ, FILIAL}
+
+
+def test_consolidado_do_painel_bate_com_a_view(banco, monkeypatch):
+    """O painel calcula o saldo em pandas (kpis) e a view calcula em SQL. Os dois têm
+    que dar o mesmo número - quando divergem, quem olha a tela decide errado.
+
+    Este teste existe por um bug real: o consolidado do painel ignorava o saldo inicial
+    contado de Piatã (lia produtos.saldo_inicial, que é só o da matriz) e as duas pontas
+    da transferência se anulavam, então o total ficava igual ao da matriz. Dava 100 onde
+    a view dava 95."""
+    from estoque import paginas
+    monkeypatch.setattr(paginas, "hoje_brasil", lambda: date(2026, 10, 15))
+    banco.criar_produto("00001", "PRODUTO 1", 100, D0)
+    _transferir(banco, "00001", D1, 30)
+    banco.definir_saldo_inicial_unidade("00001", FILIAL, 25, date(2026, 10, 1))
+
+    def saldo_painel(unidade):
+        paginas.carregar_base.clear()
+        ind = paginas.calcular_indicadores(unidade=unidade)
+        return float(ind[ind["cod_produto"] == "00001"].iloc[0]["saldo_atual"])
+
+    assert saldo_painel(MATRIZ) == 70
+    assert saldo_painel(FILIAL) == 25
+    assert saldo_painel(paginas.CONSOLIDADO) == 95
+    assert float(banco.obter_produto("00001")["saldo_atual"]) == 95  # a view concorda
+
+
+def test_consolidado_nao_conta_duas_vezes_o_que_foi_transferido_antes_da_contagem(banco, monkeypatch):
+    """A transferência de 03/10 já está dentro das 25 contadas em Piatã no dia 10. Somar
+    as unidades com UM corte de data só a contaria de novo - é por isso que o
+    consolidado soma as séries por unidade, cada uma com o seu corte."""
+    from estoque import paginas
+    monkeypatch.setattr(paginas, "hoje_brasil", lambda: date(2026, 10, 15))
+    banco.criar_produto("00001", "PRODUTO 1", 100, D0)
+    _transferir(banco, "00001", date(2026, 10, 3), 30)
+    banco.definir_saldo_inicial_unidade("00001", FILIAL, 25, date(2026, 10, 10))
+    paginas.carregar_base.clear()
+    ind = paginas.calcular_indicadores(unidade=paginas.CONSOLIDADO)
+    # 70 na matriz + 25 contados em Piatã. Nada de 100 nem de 125.
+    assert float(ind[ind["cod_produto"] == "00001"].iloc[0]["saldo_atual"]) == 95

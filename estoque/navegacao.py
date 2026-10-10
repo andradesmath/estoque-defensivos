@@ -12,9 +12,11 @@ Decisões visuais, para quem for mexer depois:
     defensivo: é cor que informa estado, não enfeite. Mesma regra no resto - cor só
     aparece onde significa alguma coisa (unidade ativa, tela ativa, aviso). O resto é
     uma escala de cinza-esverdeado.
-  - A UNIDADE vem antes do menu e em botões lado a lado, não num radio empilhado:
-    é a escolha que muda o SIGNIFICADO de todo número da tela, então precisa estar
-    sempre visível e ser trocável num clique.
+  - A UNIDADE vem antes do menu, porque é a escolha que muda o SIGNIFICADO de todo
+    número da tela: precisa estar sempre visível e ser trocável num clique. Em botões
+    de largura inteira, e não num controle de opções lado a lado - três rótulos em
+    linha não cabem na barra, e mexer em fonte e padding só empurrava o
+    transbordamento para outra resolução. Altura é barata aqui; largura não é.
   - Rótulo de seção em caixa normal, não em CAIXA ALTA: a sidebar já tem pouca largura
     e versalete come legibilidade sem acrescentar hierarquia que o peso e a cor não
     dêem.
@@ -117,28 +119,13 @@ CSS = """
 }
 [data-testid="stSidebar"] .stButton > button:focus-visible { outline: 2px solid var(--nav-accent); outline-offset: 1px; }
 
-/* Seletor de unidade: as três opções dividem a largura por igual e nunca transbordam.
-   min-width:0 é o que permite o item encolher dentro do flex - sem ele o conteúdo
-   define o tamanho e o grupo estoura a barra. */
-[data-testid="stSidebar"] [data-testid="stSegmentedControl"] { margin-bottom: .1rem; max-width: 100%; }
-[data-testid="stSidebar"] [data-testid="stSegmentedControl"] > div {
-  flex-wrap: nowrap !important; width: 100%; gap: 2px;
-}
-[data-testid="stSidebar"] [data-testid="stSegmentedControl"] button {
-  flex: 1 1 0; min-width: 0; font-size: .7rem; padding: .2rem .25rem;
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-height: 0;
-}
+/* Seletor de unidade. Em botões de largura inteira, como os do menu, e não num
+   controle de opções lado a lado: na largura da barra, três rótulos em linha
+   transbordavam, e qualquer ajuste de fonte/padding só empurrava o problema para
+   outra resolução. Altura é o recurso barato aqui; largura não é. */
 [data-testid="stSidebar"] hr { border-color: var(--nav-line); margin: .7rem 0 .2rem; }
 </style>
 """
-
-
-def _rotulo_unidade(nome: str) -> str:
-    """Rótulo curto para o seletor. "Barra da Estiva" inteiro não cabe nas três opções
-    lado a lado na largura da barra, e o controle quebrava em duas linhas deixando
-    "Consolidado" solto, parecendo outro widget. O nome completo continua no tooltip e
-    no aviso de contagem."""
-    return "B. Estiva" if nome == "Barra da Estiva" else nome
 
 
 def _secoes_completas(telas: list[str]) -> list[tuple[str, list[tuple[str, str]]]]:
@@ -174,11 +161,14 @@ def render(telas: list[str], unidades: list[str], aviso_unidade: str | None = No
             padrao = "Barra da Estiva" if "Barra da Estiva" in unidades else unidades[0]
             if st.session_state.get("unidade_estoque") not in unidades:
                 st.session_state["unidade_estoque"] = padrao
-            st.segmented_control(
-                "Unidade", unidades, key="unidade_estoque",
-                selection_mode="single", label_visibility="collapsed",
-                format_func=_rotulo_unidade,
-                help="Cada unidade tem estoque próprio. 'Consolidado' soma as duas.")
+            st.markdown('<div class="nav-secao">Unidade</div>', unsafe_allow_html=True)
+            for nome in unidades:
+                ativa = nome == st.session_state["unidade_estoque"]
+                icone = ":material/functions:" if nome == CONSOLIDADO else ":material/store:"
+                if st.button(nome, key=f"un_{nome}", icon=icone,
+                             type="primary" if ativa else "tertiary", width="stretch"):
+                    st.session_state["unidade_estoque"] = nome
+                    st.rerun()
         if erro_unidades:
             st.error("Não consegui ler as unidades; mostrando só o consolidado.", icon=":material/error:")
             st.caption(erro_unidades)

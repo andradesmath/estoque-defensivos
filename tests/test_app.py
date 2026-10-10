@@ -48,11 +48,12 @@ def _ir(at, tela):
 
 
 def _trocar_unidade(at, unidade):
-    """O seletor de unidade é um segmented_control; mexer no session_state é o jeito
-    estável de acioná-lo no AppTest, que não expõe esse widget."""
-    at.session_state["unidade_estoque"] = unidade
-    at.run()
+    """Clica no botão da unidade, como a pessoa faz. O seletor é uma lista de botões
+    de largura inteira (key 'un_<unidade>') - era um controle de opções lado a lado,
+    que transbordava a barra."""
+    at.sidebar.button(key=f"un_{unidade}").click().run()
     assert not at.exception, [e.value for e in at.exception]
+    assert at.session_state["unidade_estoque"] == unidade
     return at
 
 

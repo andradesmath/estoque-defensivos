@@ -112,6 +112,21 @@ def _prep_transferencias(transferencias) -> pd.DataFrame:
     return t.groupby(["cod_produto", "data"], as_index=False)[["quantidade_transferida"]].sum()
 
 
+def somar_series(series: list) -> pd.DataFrame:
+    """Soma séries de saldo de várias unidades em uma só, por (produto, dia).
+
+    É assim que se monta o CONSOLIDADO, e não recalculando tudo junto com um corte de
+    data único: cada unidade tem a sua data de contagem, e um corte só contaria de novo
+    o que foi transferido antes da contagem do destino (a mercadoria estaria no saldo
+    inicial dele E na movimentação). Dia em que uma unidade ainda não tinha contagem
+    entra com zero por ela - antes de contar, não há estoque conhecido ali."""
+    cheias = [s for s in series if s is not None and not s.empty]
+    if not cheias:
+        return pd.DataFrame(columns=["cod_produto", "data", "saldo"])
+    return (pd.concat(cheias, ignore_index=True)
+            .groupby(["cod_produto", "data"], as_index=False)["saldo"].sum())
+
+
 def serie_saldo_diaria(produtos: pd.DataFrame, mov: pd.DataFrame, ajustes: pd.DataFrame,
                        hoje: date, entradas=None, transferencias=None,
                        transferencias_entrada=None) -> pd.DataFrame:
@@ -189,14 +204,18 @@ def indicadores(
     entradas=None,
     transferencias=None,
     transferencias_entrada=None,
+    serie=None,
 ) -> pd.DataFrame:
     p = _prep_produtos(produtos).reset_index(drop=True)
     if p.empty:
         return pd.DataFrame(columns=COLUNAS_INDICADORES)
     m = _prep_mov(mov)
     hoje_ts = pd.Timestamp(hoje)
-    serie = serie_saldo_diaria(produtos, mov, ajustes, hoje, entradas, transferencias,
-                               transferencias_entrada)
+    # `serie` pronta vem do consolidado, que soma as séries das unidades (ver
+    # somar_series) em vez de recalcular tudo junto.
+    if serie is None:
+        serie = serie_saldo_diaria(produtos, mov, ajustes, hoje, entradas, transferencias,
+                                   transferencias_entrada)
 
     ini_global = hoje_ts - pd.Timedelta(days=janela_dias - 1)
     p["inicio_periodo"] = p["data_saldo_inicial"].apply(lambda d0: max(ini_global, d0 + pd.Timedelta(days=1)))
@@ -306,10 +325,13 @@ def resumo_geral(ind: pd.DataFrame) -> dict:
 
 def evolucao_valor_estoque(produtos: pd.DataFrame, mov: pd.DataFrame, ajustes: pd.DataFrame,
                            hoje: date, entradas=None, transferencias=None,
-                           transferencias_entrada=None) -> pd.DataFrame:
+                           transferencias_entrada=None, serie=None) -> pd.DataFrame:
     """Valor total do estoque a custo por dia (custo atual aplicado ao histórico)."""
-    serie = serie_saldo_diaria(produtos, mov, ajustes, hoje, entradas, transferencias,
-                               transferencias_entrada)
+    # `serie` pronta vem do consolidado, que soma as séries das unidades (ver
+    # somar_series) em vez de recalcular tudo junto.
+    if serie is None:
+        serie = serie_saldo_diaria(produtos, mov, ajustes, hoje, entradas, transferencias,
+                                   transferencias_entrada)
     p = _prep_produtos(produtos)[["cod_produto", "preco_custo"]]
     s = serie.merge(p, on="cod_produto")
     s = s[s["preco_custo"].notna()]
