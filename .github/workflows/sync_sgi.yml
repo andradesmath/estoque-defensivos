@@ -11,7 +11,10 @@ on:
         description: "Só uma loja (vazio = todas as configuradas)"
         required: false
         type: choice
-        options: ["", "Porteira", "Casa de Adubo"]
+        # A lista e fixa aqui: loja nova precisa entrar nos DOIS lugares, nesta
+        # opcao e no env SGI_EMPRESA_* la embaixo. So o env fez Piata rodar na
+        # execucao normal (campo vazio = todas) mas sumir do seletor manual.
+        options: ["", "Porteira", "Casa de Adubo", "Piatã"]
       data:
         description: "Só este dia, DD/MM/AAAA (vazio = dias pendentes + janela móvel)"
         required: false
