@@ -106,3 +106,25 @@ def test_produto_aparece_em_toda_unidade_mesmo_sem_contagem(base):
     assert unidades == {MATRIZ, FILIAL}
     for u in unidades:
         assert not base.saldo_por_unidade(u).empty
+
+
+def test_aplicar_schema_por_partes_cria_tudo_e_repete_sem_erro(banco):
+    """Autocura do painel: aplicar o schema comando a comando tem que criar o que
+    falta E poder rodar de novo sem quebrar. É o caminho que conserta o banco quando
+    ele fica atrás do código (o @st.cache_resource do init_schema não roda de novo num
+    recarregamento sem reinício de processo)."""
+    from sqlalchemy import text
+
+    with banco.get_engine().begin() as c:
+        c.execute(text("DROP VIEW IF EXISTS v_saldo_produto"))
+        c.execute(text("DROP VIEW IF EXISTS v_saldo_produto_unidade"))
+        c.execute(text("DROP TABLE IF EXISTS unidades_loja"))
+        c.execute(text("DROP TABLE IF EXISTS saldo_inicial_unidade"))
+        c.execute(text("DROP TABLE IF EXISTS unidades CASCADE"))
+    with pytest.raises(Exception):
+        banco.listar_unidades()
+
+    assert banco.aplicar_schema_por_partes() > 0
+    assert {u["nome"] for u in banco.listar_unidades()} == {MATRIZ, FILIAL}
+    banco.aplicar_schema_por_partes()  # idempotente
+    assert {u["nome"] for u in banco.listar_unidades()} == {MATRIZ, FILIAL}

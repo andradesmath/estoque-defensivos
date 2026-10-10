@@ -142,6 +142,25 @@ def _comandos_do_schema(*termos: str) -> list[str]:
     return comandos
 
 
+def aplicar_schema_por_partes() -> int:
+    """Roda o schema.sql INTEIRO, um comando por vez, e devolve quantos rodaram.
+
+    Diferente de init_schema(), que manda o arquivo todo numa tacada só: aqui cada
+    comando vai sozinho, o que (a) funciona no pg8000 dos robôs e (b) serve de
+    AUTOCURA no painel quando o banco está atrás do código. Isso aconteceu de verdade:
+    _preparar_banco() é @st.cache_resource, então num recarregamento de código sem
+    reinício de processo o init_schema NÃO roda de novo - o painel subiu com as
+    unidades e o banco ainda sem a tabela `unidades`.
+
+    Todos os comandos do schema são idempotentes (IF NOT EXISTS / OR REPLACE / DROP+
+    CREATE de view), então repetir é seguro."""
+    comandos = _comandos_do_schema("")  # "" casa com todos
+    for cmd in comandos:
+        with get_engine().begin() as conn:
+            conn.execute(text(cmd))
+    return len(comandos)
+
+
 def garantir_schema_robos() -> list[str]:
     """Cria o que os robôs do SGI desktop precisam, se ainda não existir: a tabela
     movimentacao_transferencia (+ índice), a versão de v_saldo_produto que desconta as

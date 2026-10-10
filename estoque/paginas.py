@@ -31,10 +31,24 @@ CONSOLIDADO = "Consolidado"
 
 
 def unidades_disponiveis() -> list[str]:
-    """Opções do seletor: as unidades cadastradas + o consolidado no fim."""
+    """Opções do seletor: as unidades cadastradas + o consolidado no fim.
+
+    Se a tabela ainda não existir, APLICA o schema e tenta de novo, em vez de devolver
+    só o consolidado calado. Foi o que aconteceu no primeiro deploy: _preparar_banco()
+    é @st.cache_resource e não rodou de novo num recarregamento de código sem reinício
+    de processo, então o painel subiu com as unidades e o banco sem a tabela - e o
+    seletor apareceu com uma opção só, sem dizer por quê. Esconder o erro foi pior que
+    o erro."""
     try:
         return [u["nome"] for u in db.listar_unidades()] + [CONSOLIDADO]
-    except Exception:  # noqa: BLE001 - banco antigo, antes das unidades
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        db.aplicar_schema_por_partes()
+        st.session_state.pop("erro_unidades", None)
+        return [u["nome"] for u in db.listar_unidades()] + [CONSOLIDADO]
+    except Exception as e:  # noqa: BLE001
+        st.session_state["erro_unidades"] = f"{type(e).__name__}: {e}"
         return [CONSOLIDADO]
 
 

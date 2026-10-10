@@ -121,6 +121,10 @@ def main() -> None:
         unidades = paginas.unidades_disponiveis()
         padrao = unidades.index("Barra da Estiva") if "Barra da Estiva" in unidades else 0
         st.radio("Unidade", unidades, index=padrao, key="unidade_estoque")
+        if st.session_state.get("erro_unidades"):
+            st.error("Não consegui ler as unidades de estoque; mostrando só o "
+                     "consolidado.", icon="⚠️")
+            st.caption(st.session_state["erro_unidades"])
         _avisar_unidade_sem_contagem(st.session_state.get("unidade_estoque"))
         st.divider()
         pagina = st.radio("Tela", list(PAGINAS), label_visibility="collapsed", key="pagina")
