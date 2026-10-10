@@ -39,19 +39,28 @@ def app_semeado(banco, monkeypatch, pdf_real_bytes, base_xlsx_bytes):
     return at
 
 
+def _radio_com(at, opcao):
+    """O radio do grupo que contém essa opção. A navegação é um radio por grupo
+    (estoque/navegacao.py) e a key muda junto com a escolha atual, então procura-se
+    pelas OPÇÕES, não pela key."""
+    for r in at.sidebar.radio:
+        if opcao in list(r.options):
+            return r
+    raise AssertionError(f"{opcao!r} não está em nenhum grupo do menu: "
+                         f"{[list(r.options) for r in at.sidebar.radio]}")
+
+
 def _ir(at, tela):
-    """Navega clicando no item do menu, como a pessoa faz. A navegação virou botões
-    agrupados por seção (estoque/navegacao.py); cada um tem key 'nav_<nome da tela>'."""
-    at.sidebar.button(key=f"nav_{tela}").click().run()
+    """Navega escolhendo o item no menu, como a pessoa faz."""
+    _radio_com(at, tela).set_value(tela).run()
     assert not at.exception, [e.value for e in at.exception]
+    assert at.session_state["pagina"] == tela
     return at
 
 
 def _trocar_unidade(at, unidade):
-    """Clica no botão da unidade, como a pessoa faz. O seletor é uma lista de botões
-    de largura inteira (key 'un_<unidade>') - era um controle de opções lado a lado,
-    que transbordava a barra."""
-    at.sidebar.button(key=f"un_{unidade}").click().run()
+    """Escolhe a unidade no seletor, como a pessoa faz."""
+    _radio_com(at, unidade).set_value(unidade).run()
     assert not at.exception, [e.value for e in at.exception]
     assert at.session_state["unidade_estoque"] == unidade
     return at
@@ -133,9 +142,9 @@ def test_senha_protege_o_painel(banco, monkeypatch):
     _por_rotulo(at.text_input, "Senha").set_value("errada").run()
     assert any("incorreta" in e.value for e in at.error)
     _por_rotulo(at.text_input, "Senha").set_value("segredo").run()
-    # Pela CHAVE de um item do menu: contar widgets quebraria a cada item novo.
-    chaves = {b.key for b in at.sidebar.button}
-    assert "nav_Visão geral" in chaves, chaves
+    # Pela presença de um item do menu: contar widgets quebraria a cada item novo.
+    opcoes = {o for r in at.sidebar.radio for o in r.options}
+    assert "Visão geral" in opcoes, opcoes
 
 
 def test_visao_geral_anualiza_com_historico_suficiente(app_semeado, monkeypatch):
