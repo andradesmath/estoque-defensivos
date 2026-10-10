@@ -485,6 +485,19 @@ def saldo_por_unidade(unidade: str | None = None, so_ativos: bool = True) -> pd.
                    ORDER BY descricao, unidade_estoque""", **params)
 
 
+def produtos_para_match() -> dict:
+    """{cod_produto: descricao} dos produtos ATIVOS, para casar descrição de planilha
+    com o cadastro (ver estoque/match_produto.py).
+
+    dict e não DataFrame porque quem usa isto é script de linha de comando, que roda
+    no Python 32-bit sem pandas - a mesma regra de possiveis_duplicatas_* e
+    ultimas_execucoes_lista."""
+    with get_engine().begin() as conn:
+        linhas = conn.execute(text(
+            "SELECT cod_produto, descricao FROM produtos WHERE ativo ORDER BY descricao")).all()
+    return {c: d for c, d in linhas}
+
+
 def unidade_tem_contagem(unidade: str) -> bool:
     """A unidade já tem contagem física registrada?
 

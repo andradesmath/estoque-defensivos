@@ -61,6 +61,11 @@ jobs:
           SGI_SENHA: ${{ secrets.SGI_SENHA }}
           SGI_EMPRESA_PORTEIRA: ${{ secrets.SGI_EMPRESA_PORTEIRA }}
           SGI_EMPRESA_CASA_ADUBO: ${{ secrets.SGI_EMPRESA_CASA_ADUBO }}
+          # Filial de Piata. O login e o mesmo das outras (SGI_LOGIN/SGI_SENHA); o
+          # que muda por loja e o nome da EMPRESA no portal. Enquanto o secret nao
+          # existir, a loja simplesmente nao e sincronizada - sync_sgi.py so roda as
+          # lojas cuja variavel esta definida.
+          SGI_EMPRESA_PIATA: ${{ secrets.SGI_EMPRESA_PIATA }}
           SGI_OPERACOES: ${{ vars.SGI_OPERACOES || 'V' }}
           # inputs passam por variável de ambiente (nunca interpolados no shell -> sem injeção)
           IN_LOJA: ${{ github.event.inputs.loja }}
